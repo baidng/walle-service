@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>登录 · walle-ai</title>
+<style>
+  :root { --bg:#0f1115; --card:#181b22; --line:#2a2f3a; --text:#e6e9ef; --muted:#9aa4b2; --accent:#4c8dff; --accent2:#2ecc71; --bad:#e74c3c; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; display: flex; align-items: center; justify-content: center;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: radial-gradient(1200px 600px at 50% -10%, #1b2333 0%, var(--bg) 60%);
+    color: var(--text);
+  }
+  .card {
+    width: min(400px, calc(100vw - 32px));
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+    padding: 32px 28px; box-shadow: 0 20px 60px rgba(0,0,0,.45);
+  }
+  .brand { font-size: 28px; font-weight: 700; text-align: center; letter-spacing: .5px; }
+  .brand span { color: var(--accent); }
+  .sub { margin: 6px 0 22px; text-align: center; color: var(--muted); font-size: 13px; }
+
+  .tabs { display: flex; gap: 8px; margin-bottom: 22px; }
+  .tab {
+    flex: 1; padding: 10px; border-radius: 8px; border: 1px solid var(--line);
+    background: #12151b; color: var(--muted); cursor: pointer; font-size: 13px; text-align: center;
+    transition: all .15s ease;
+  }
+  .tab.active { border-color: var(--accent); color: var(--text); background: #162236; }
+  .tab.active.admin { border-color: var(--accent); }
+  .tab.active.user  { border-color: var(--accent2); background: #14231d; }
+
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 16px; }
+  input {
+    display: block; width: 100%; margin-top: 6px; padding: 10px 12px; font-size: 14px;
+    color: var(--text); background: #12151b; border: 1px solid var(--line); border-radius: 8px; outline: none;
+  }
+  input:focus { border-color: var(--accent); }
+  button {
+    width: 100%; margin-top: 6px; padding: 11px 14px; font-size: 15px; font-weight: 600;
+    color: #fff; background: var(--accent); border: 0; border-radius: 8px; cursor: pointer;
+    transition: background .15s ease;
+  }
+  button:disabled { opacity: .6; cursor: not-allowed; }
+  button.user { background: var(--accent2); }
+  .msg { min-height: 18px; margin-top: 14px; font-size: 13px; color: var(--bad); text-align: center; }
+  .tip { margin-top: 16px; font-size: 12px; color: var(--muted); text-align: center; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="brand">walle<span>-ai</span></div>
+    <div class="sub">树莓派小车远程控制平台</div>
+
+    <div class="tabs">
+      <div class="tab admin active" data-role="admin">管理员登录</div>
+      <div class="tab user" data-role="user">普通用户登录</div>
+    </div>
+
+    <form id="login-form">
+      <label>用户名
+        <input id="username" name="username" autocomplete="username" required autofocus />
+      </label>
+      <label>密码
+        <input id="password" name="password" type="password" autocomplete="current-password" required />
+      </label>
+      <button id="submit" type="submit">登 录</button>
+      <div class="msg" id="msg"></div>
+    </form>
+
+    <div class="tip">凭据由 EMQX 后端校验，角色仅决定门户入口</div>
+  </div>
+
+<script>
+const ROLE_KEY = "walle_role";
+const TOKEN_KEY = "walle_token";
+const USER_KEY = "walle_user";
+
+// already logged in → go to home (role router)
+if (sessionStorage.getItem(TOKEN_KEY)) location.replace("home.html");
+
+let role = sessionStorage.getItem(ROLE_KEY) || "admin";
+const tabs = document.querySelectorAll(".tab");
+const btn = document.getElementById("submit");
+const form = document.getElementById("login-form");
+const msg = document.getElementById("msg");
+
+function updateRoleUI() {
+  tabs.forEach(t => t.classList.toggle("active", t.dataset.role === role));
+  if (role === "user") { btn.classList.add("user"); btn.textContent = "普通用户登录"; }
+  else                { btn.classList.remove("user"); btn.textContent = "管理员登录"; }
+}
+tabs.forEach(t => t.addEventListener("click", () => { role = t.dataset.role; updateRoleUI(); }));
+updateRoleUI();
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const username = document.getElementById("username").value.trim();
+  const password = document.getElementById("password").value;
+  if (!username || !password) return;
+
+  msg.textContent = "";
+  btn.disabled = true;
+  btn.textContent = "登录中…";
+  try {
+    const res = await fetch("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    if (res.ok) {
+      const data = await res.json().catch(() => ({}));
+      sessionStorage.setItem(TOKEN_KEY, data.token || "ok");
+      sessionStorage.setItem(USER_KEY, username);
+      sessionStorage.setItem(ROLE_KEY, role);
+      location.replace("home.html");
+      return;
+    }
+    msg.textContent = res.status === 401 ? "用户名或密码错误" : "登录失败（HTTP " + res.status + "）";
+  } catch (err) {
+    msg.textContent = "无法连接服务：" + err.message;
+  }
+  btn.disabled = false;
+  btn.textContent = role === "user" ? "普通用户登录" : "管理员登录";
+});
+</script>
+</body>
+</html>

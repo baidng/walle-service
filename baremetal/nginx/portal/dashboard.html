@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>EMQX + SRS 统一门户 (MVP)</title>
+<style>
+  :root { --bg:#0f1115; --card:#181b22; --line:#2a2f3a; --text:#e6e9ef; --muted:#9aa4b2; --ok:#2ecc71; --warn:#f1c40f; --bad:#e74c3c; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }
+  header { padding:16px 20px; border-bottom:1px solid var(--line); display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:18px; margin:0; }
+  header .links a { color:#6cb6ff; text-decoration:none; margin-right:12px; font-size:13px; }
+  main { padding:20px; display:grid; gap:16px; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); }
+  section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  section h2 { margin:0 0 10px; font-size:15px; display:flex; justify-content:space-between; align-items:center; }
+  .badge { font-size:12px; color:var(--muted); }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-weight:500; }
+  .err { color:var(--bad); font-size:12px; white-space:pre-wrap; }
+  .ok { color:var(--ok); }
+  video { width:100%; background:#000; border-radius:8px; min-height:220px; }
+  .row { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:8px; }
+  .kpi { background:#12151b; border:1px solid var(--line); border-radius:8px; padding:8px 12px; min-width:110px; }
+  .kpi b { display:block; font-size:18px; }
+  .kpi span { color:var(--muted); font-size:12px; }
+  footer { padding:0 20px 24px; color:var(--muted); font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>EMQX + SRS 统一门户 <span class="badge">MVP</span></h1>
+  <div class="links">
+    <a href="http://192.168.31.114:18083" target="_blank" rel="noreferrer">EMQX Dashboard</a>
+    <a href="http://192.168.31.114:8080/console/" target="_blank" rel="noreferrer">SRS Console</a>
+    <a href="http://192.168.31.114:8080/players/srs_player.html?app=live&stream=test&autostart=true" target="_blank" rel="noreferrer">SRS Player</a>
+  </div>
+  <div class="badge" id="updated">-</div>
+</header>
+
+<main>
+  <section>
+    <h2>EMQX 概览 <span class="badge" id="emqx-status">-</span></h2>
+    <div class="row">
+      <div class="kpi"><b id="emqx-clients">-</b><span>客户端</span></div>
+      <div class="kpi"><b id="emqx-subs">-</b><span>订阅</span></div>
+      <div class="kpi"><b id="emqx-node">-</b><span>节点状态</span></div>
+    </div>
+    <div class="err" id="emqx-err"></div>
+  </section>
+
+  <section>
+    <h2>SRS 流 <span class="badge" id="srs-status">-</span></h2>
+    <table>
+      <thead><tr><th>App</th><th>Stream</th><th>客户端</th><th>接收 kbps</th><th>发送 kbps</th></tr></thead>
+      <tbody id="srs-streams"><tr><td colspan="5" class="badge">加载中…</td></tr></tbody>
+    </table>
+    <div class="err" id="srs-err"></div>
+  </section>
+
+  <section>
+    <h2>MQTT 客户端 <span class="badge">/api/v5/clients</span></h2>
+    <table>
+      <thead><tr><th>ClientID</th><th>用户名</th><th>协议</th><th>在线</th></tr></thead>
+      <tbody id="mqtt-clients"><tr><td colspan="4" class="badge">加载中…</td></tr></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>MQTT 订阅 <span class="badge">/api/v5/subscriptions</span></h2>
+    <table>
+      <thead><tr><th>ClientID</th><th>Topic</th><th>QoS</th></tr></thead>
+      <tbody id="mqtt-subs"><tr><td colspan="3" class="badge">加载中…</td></tr></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>SRS 推流客户端 <span class="badge">/api/v1/clients</span></h2>
+    <table>
+      <thead><tr><th>ID</th><th>IP</th><th>类型</th></tr></thead>
+      <tbody id="srs-clients"><tr><td colspan="3" class="badge">加载中…</td></tr></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>测试流播放 <span class="badge">HTTP-FLV</span></h2>
+    <video id="player" controls muted autoplay playsinline></video>
+    <div class="row" style="margin-top:8px"><button id="play-btn" style="padding:8px 14px;border-radius:8px;border:1px solid #2a2f3a;background:#12151b;color:#e6e9ef;cursor:pointer">播放 / 重连</button></div>
+    <div class="badge" id="player-status">等待播放…</div>
+    <div class="err" id="player-err"></div>
+  </section>
+</main>
+
+<footer>MVP：浏览器 → nginx 容器（同源）→ EMQX REST / SRS API；EMQX API Key 由反代注入，仅用于验证。</footer>
+
+<script src="/srs/players/js/mpegts-1.7.3.min.js"></script>
+<script>
+const HOST = location.hostname;
+const $ = (id) => document.getElementById(id);
+
+function setText(id, v) { $(id).textContent = v; }
+function clearErr(id) { setText(id, ""); }
+function showErr(id, e) { setText(id, String(e && e.message ? e.message : e)); }
+
+async function getJSON(url) {
+  const r = await fetch(url, { cache: "no-store" });
+  if (!r.ok) throw new Error(url + " -> HTTP " + r.status);
+  return r.json();
+}
+
+function row(cells) {
+  const tr = document.createElement("tr");
+  for (const c of cells) {
+    const td = document.createElement("td");
+    td.textContent = c == null ? "-" : String(c);
+    tr.appendChild(td);
+  }
+  return tr;
+}
+
+async function loadEMQX() {
+  clearErr("emqx-err");
+  try {
+    const [clients, subs, nodes] = await Promise.all([
+      getJSON("/emqx-api/clients?limit=20"),
+      getJSON("/emqx-api/subscriptions?limit=20"),
+      getJSON("/emqx-api/nodes"),
+    ]);
+    setText("emqx-clients", clients.meta ? clients.meta.count : (clients.data || []).length);
+    setText("emqx-subs", subs.meta ? subs.meta.count : (subs.data || []).length);
+    const n = Array.isArray(nodes) ? nodes[0] : null;
+    setText("emqx-node", n ? (n.node_status || "unknown") : "-");
+    setText("emqx-status", n ? ("节点 " + n.node + " / v" + n.version) : "已连接");
+
+    const tb1 = $("mqtt-clients"); tb1.innerHTML = "";
+    (clients.data || []).forEach(c => tb1.appendChild(row([c.clientid, c.username, c.proto_name, c.connected ? "是" : "否"])));
+    if (!tb1.children.length) tb1.appendChild(row(["（无客户端）", "", "", ""]));
+
+    const tb2 = $("mqtt-subs"); tb2.innerHTML = "";
+    (subs.data || []).forEach(s => tb2.appendChild(row([s.clientid, s.topic, s.qos])));
+    if (!tb2.children.length) tb2.appendChild(row(["（无订阅）", "", ""]));
+  } catch (e) {
+    showErr("emqx-err", e);
+    setText("emqx-status", "异常");
+  }
+}
+
+async function loadSRS() {
+  clearErr("srs-err");
+  try {
+    const [streams, clients] = await Promise.all([
+      getJSON("/srs-api/streams/"),
+      getJSON("/srs-api/clients/"),
+    ]);
+    const tb = $("srs-streams"); tb.innerHTML = "";
+    (streams.streams || []).forEach(s => tb.appendChild(row([
+      s.app, s.name, (s.clients || []).length,
+      s.kbps ? s.kbps.recv_30s : "-", s.kbps ? s.kbps.send_30s : "-"
+    ])));
+    if (!tb.children.length) tb.appendChild(row(["（无流）", "", "", "", ""]));
+    setText("srs-status", "流 " + (streams.streams || []).length);
+
+    const tb2 = $("srs-clients"); tb2.innerHTML = "";
+    (clients.clients || []).forEach(c => tb2.appendChild(row([c.id, c.ip, c.type])));
+    if (!tb2.children.length) tb2.appendChild(row(["（无推流客户端）", "", ""]));
+  } catch (e) {
+    showErr("srs-err", e);
+    setText("srs-status", "异常");
+  }
+}
+
+function startPlayer() {
+  const video = $("player");
+  if (typeof mpegts === "undefined") {
+    setText("player-status", "mpegts.js 未加载，请使用上方 SRS Player 链接");
+    return;
+  }
+  const url = "/srs/live/test.flv";
+  const p = mpegts.createPlayer({ type: "flv", isLive: true, url });
+  p.attachMediaElement(video);
+  p.load();
+  p.on(mpegts.Events.ERROR, (t, d) => showErr("player-err", t + " " + d));
+  window.__mvpPlayer = p;
+  const tryPlay = () => video.play().then(() => setText("player-status", "播放中：" + url))
+    .catch(e => { setText("player-status", "浏览器拦截了自动播放，请点击“播放 / 重连”"); showErr("player-err", e.message); });
+  document.getElementById("play-btn").onclick = () => { try { p.unload(); p.load(); } catch (e) {} tryPlay(); };
+  tryPlay();
+}
+
+async function refresh() {
+  await Promise.all([loadEMQX(), loadSRS()]);
+  setText("updated", "更新于 " + new Date().toLocaleTimeString());
+}
+
+refresh();
+setInterval(refresh, 5000);
+startPlayer();
+</script>
+</body>
+</html>

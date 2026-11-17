@@ -1,0 +1,17 @@
+[Unit]
+Description=SRS 7.0.215 media server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gs
+Group=gs
+WorkingDirectory=/home/gs/01_walle_service/baremetal/srs/trunk
+ExecStart=/home/gs/01_walle_service/baremetal/srs/trunk/objs/srs -c /home/gs/01_walle_service/baremetal/srs.conf
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=10000
+
+[Install]
+WantedBy=multi-user.target

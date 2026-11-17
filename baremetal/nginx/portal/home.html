@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>跳转中 · walle-ai</title>
+<style>
+  body { margin:0; height:100vh; display:flex; align-items:center; justify-content:center;
+         font-family: system-ui, sans-serif; background:#0f1115; color:#9aa4b2; }
+  .spin { width:28px; height:28px; border:3px solid #2a2f3a; border-top-color:#4c8dff;
+          border-radius:50%; animation:spin .8s linear infinite; margin-right:12px; display:inline-block;
+          vertical-align: middle; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+  <div><span class="spin"></span>正在进入 walle-ai 平台…</div>
+<script>
+const TOKEN_KEY = "walle_token";
+const ROLE_KEY  = "walle_role";
+if (!sessionStorage.getItem(TOKEN_KEY)) location.replace("/");
+else {
+  const role = sessionStorage.getItem(ROLE_KEY) || "user";
+  location.replace(role === "admin" ? "admin.html" : "user.html");
+}
+</script>
+</body>
+</html>

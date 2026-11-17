@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>管理员控制台 · walle-ai</title>
+<style>
+  :root {
+    --bg:#0f1115; --side:#14171d; --card:#181b22; --line:#2a2f3a;
+    --text:#e6e9ef; --muted:#9aa4b2; --accent:#4c8dff; --accent2:#2ecc71; --warn:#f1c40f; --bad:#e74c3c;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: var(--bg); color: var(--text);
+         display: grid; grid-template-columns: 240px 1fr; grid-template-rows: 56px 1fr;
+         grid-template-areas: "side head" "side main"; }
+
+  /* Sidebar */
+  aside { grid-area: side; background: var(--side); border-right: 1px solid var(--line);
+          display: flex; flex-direction: column; }
+  .brand { padding: 18px 20px 14px; font-size: 18px; font-weight: 700;
+           border-bottom: 1px solid var(--line); letter-spacing: .5px; }
+  .brand span { color: var(--accent); }
+  .brand small { display: block; margin-top: 2px; font-size: 11px; color: var(--muted); font-weight: 400; letter-spacing: 0; }
+
+  nav { flex: 1; padding: 10px 10px 20px; overflow-y: auto; }
+  .menu-item, .menu-group-title {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 12px; border-radius: 8px; font-size: 14px; color: var(--muted);
+    cursor: pointer; transition: background .12s, color .12s;
+  }
+  .menu-item:hover, .menu-group-title:hover { background: #1b1f27; color: var(--text); }
+  .menu-item.active { background: #162236; color: var(--accent); }
+  .menu-group { margin-top: 6px; }
+  .menu-group-title { color: var(--text); font-weight: 500; }
+  .menu-group-title .arrow { margin-left: auto; transition: transform .15s; font-size: 10px; }
+  .menu-group.open .menu-group-title .arrow { transform: rotate(90deg); }
+  .menu-group.open .menu-children { display: block; }
+  .menu-group.collapsed .menu-children { display: none; }
+  .menu-children { padding-left: 18px; margin-top: 4px; }
+  .menu-children .menu-item { font-size: 13px; padding: 7px 10px; }
+  .menu-item .ico { width: 18px; text-align: center; }
+
+  /* Header */
+  header { grid-area: head; background: var(--side); border-bottom: 1px solid var(--line);
+           display: flex; align-items: center; padding: 0 20px; gap: 16px; }
+  .crumb { color: var(--muted); font-size: 13px; }
+  .crumb b { color: var(--text); font-weight: 500; }
+  header .spacer { flex: 1; }
+  .user-chip { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .user-chip .badge { background: var(--accent); color: #fff; font-size: 11px; padding: 2px 8px; border-radius: 10px; }
+  .logout { padding: 6px 12px; border: 1px solid var(--line); background: transparent; color: var(--muted);
+            border-radius: 6px; cursor: pointer; font-size: 12px; }
+  .logout:hover { color: var(--text); border-color: var(--muted); }
+
+  /* Main */
+  main { grid-area: main; padding: 20px; overflow-y: auto; }
+  .panel { display: none; }
+  .panel.active { display: block; }
+  .panel h2 { margin: 0 0 14px; font-size: 18px; }
+  .panel p.lead { color: var(--muted); margin: 0 0 20px; font-size: 14px; }
+
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  .card h3 { margin: 0 0 10px; font-size: 14px; color: var(--muted); font-weight: 500; }
+  .card .big { font-size: 28px; font-weight: 600; }
+  .card .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; background: #12151b; }
+
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; }
+  .tag.ok { background: #14311f; color: var(--accent2); }
+  .tag.warn { background: #3a3011; color: var(--warn); }
+  .tag.bad { background: #3a1a1a; color: var(--bad); }
+
+  .placeholder { color: var(--muted); font-size: 13px; padding: 24px; text-align: center;
+                 border: 1px dashed var(--line); border-radius: 8px; background: #12151b; }
+</style>
+</head>
+<body>
+
+<aside>
+  <div class="brand">walle<span>-ai</span>
+    <small>管理员控制台</small>
+  </div>
+  <nav id="nav">
+    <div class="menu-item active" data-panel="overview"><span class="ico">📋</span>基本信息</div>
+
+    <div class="menu-group open">
+      <div class="menu-group-title"><span class="ico">📡</span>MQTT<span class="arrow">▶</span></div>
+      <div class="menu-children">
+        <div class="menu-item" data-panel="mqtt-overview">概览</div>
+        <div class="menu-item" data-panel="mqtt-users">用户管理</div>
+        <div class="menu-item" data-panel="mqtt-topics">主题配置</div>
+        <div class="menu-item" data-panel="mqtt-rules">规则引擎</div>
+      </div>
+    </div>
+
+    <div class="menu-group open">
+      <div class="menu-group-title"><span class="ico">📹</span>SRS<span class="arrow">▶</span></div>
+      <div class="menu-children">
+        <div class="menu-item" data-panel="srs-overview">概览</div>
+        <div class="menu-item" data-panel="srs-streams">流管理</div>
+        <div class="menu-item" data-panel="srs-config">服务配置</div>
+      </div>
+    </div>
+
+    <div class="menu-item" data-panel="system"><span class="ico">⚙️</span>系统设置</div>
+    <div class="menu-item" data-panel="users"><span class="ico">👥</span>普通用户管理</div>
+    <div class="menu-item" data-panel="logs"><span class="ico">📜</span>日志</div>
+  </nav>
+</aside>
+
+<header>
+  <div class="crumb">管理员 / <b id="crumb">基本信息</b></div>
+  <div class="spacer"></div>
+  <div class="user-chip">
+    <span id="user-name">—</span>
+    <span class="badge">管理员</span>
+    <button class="logout" id="logout">退出</button>
+  </div>
+</header>
+
+<main id="main">
+
+  <!-- 基本信息 -->
+  <section class="panel active" data-panel="overview">
+    <h2>基本信息</h2>
+    <p class="lead">EMQX + SRS 集群运行状态总览。</p>
+    <div class="grid">
+      <div class="card"><h3>EMQX 节点</h3><div class="big" id="emqx-node">-</div><div class="sub" id="emqx-ver">-</div></div>
+      <div class="card"><h3>在线客户端</h3><div class="big" id="emqx-clients">-</div><div class="sub">MQTT 当前连接数</div></div>
+      <div class="card"><h3>SRS 版本</h3><div class="big" id="srs-ver">-</div><div class="sub">SRS 7.x</div></div>
+      <div class="card"><h3>活动流</h3><div class="big" id="srs-streams">-</div><div class="sub">推流中</div></div>
+    </div>
+    <div style="height:14px"></div>
+    <div class="card">
+      <h3>服务状态</h3>
+      <table>
+        <thead><tr><th>组件</th><th>端口</th><th>状态</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>EMQX Dashboard</td><td>18083</td><td><span class="tag ok" id="st-emqx-dash">检查中</span></td><td>REST API / 管理界面</td></tr>
+          <tr><td>EMQX MQTT</td><td>1883</td><td><span class="tag ok" id="st-emqx-mqtt">检查中</span></td><td>MQTT over TCP</td></tr>
+          <tr><td>SRS RTMP</td><td>1935</td><td><span class="tag ok" id="st-srs-rtmp">检查中</span></td><td>推流入口</td></tr>
+          <tr><td>SRS HTTP</td><td>8080</td><td><span class="tag ok" id="st-srs-http">检查中</span></td><td>FLV / HLS / console</td></tr>
+          <tr><td>SRS WebRTC</td><td>8000/udp</td><td><span class="tag warn" id="st-srs-rtc">检查中</span></td><td>WHEP / WHIP</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- MQTT -->
+  <section class="panel" data-panel="mqtt-overview">
+    <h2>MQTT · 概览</h2>
+    <p class="lead">EMQX 运行指标、订阅数、消息吞吐。</p>
+    <div class="grid">
+      <div class="card"><h3>总连接</h3><div class="big" id="mq-conn">-</div><div class="sub">当前在线客户端</div></div>
+      <div class="card"><h3>订阅数</h3><div class="big" id="mq-sub">-</div><div class="sub">活跃订阅</div></div>
+      <div class="card"><h3>入站消息/秒</h3><div class="big" id="mq-in">-</div><div class="sub">EMQX 指标</div></div>
+      <div class="card"><h3>出站消息/秒</h3><div class="big" id="mq-out">-</div><div class="sub">EMQX 指标</div></div>
+    </div>
+  </section>
+
+  <section class="panel" data-panel="mqtt-users">
+    <h2>MQTT · 用户管理</h2>
+    <p class="lead">当前实现为 EMQX Dashboard 原生用户，后续可扩展为平台用户与 MQTT ACL 映射。</p>
+    <div class="placeholder">规划中：普通用户自动创建 MQTT 凭据（username=user_{id}），按设备 topic 前缀隔离。</div>
+  </section>
+
+  <section class="panel" data-panel="mqtt-topics">
+    <h2>MQTT · 主题配置</h2>
+    <p class="lead">小车 topic 规范建议：<code>walle/{device_id}/{cmd|state|video|alarm}</code>。</p>
+    <div class="card">
+      <table>
+        <thead><tr><th>Topic 前缀</th><th>方向</th><th>用途</th><th>QoS</th></tr></thead>
+        <tbody>
+          <tr><td><code>walle/+/cmd</code></td><td>下行</td><td>下发控制指令（运动/录像/模式）</td><td>1</td></tr>
+          <tr><td><code>walle/+/state</code></td><td>上行</td><td>小车状态上报（位置/电量/传感器）</td><td>1</td></tr>
+          <tr><td><code>walle/+/alarm</code></td><td>上行</td><td>告警事件</td><td>1</td></tr>
+          <tr><td><code>walle/+/heartbeat</code></td><td>上行</td><td>心跳</td><td>0</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel" data-panel="mqtt-rules">
+    <h2>MQTT · 规则引擎</h2>
+    <div class="placeholder">规划中：将 <code>walle/+/alarm</code> 写入 MySQL / 触发 Webhook / 推送钉钉。</div>
+  </section>
+
+  <!-- SRS -->
+  <section class="panel" data-panel="srs-overview">
+    <h2>SRS · 概览</h2>
+    <p class="lead">当前活动的音视频推流、客户端与码率。</p>
+    <div class="grid">
+      <div class="card"><h3>活动流</h3><div class="big" id="srs-over-streams">-</div><div class="sub">推流中</div></div>
+      <div class="card"><h3>观看客户端</h3><div class="big" id="srs-over-clients">-</div><div class="sub">FLV/HLS/WebRTC</div></div>
+      <div class="card"><h3>入站带宽</h3><div class="big" id="srs-over-recv">-</div><div class="sub">kbps</div></div>
+      <div class="card"><h3>出站带宽</h3><div class="big" id="srs-over-send">-</div><div class="sub">kbps</div></div>
+    </div>
+  </section>
+
+  <section class="panel" data-panel="srs-streams">
+    <h2>SRS · 流管理</h2>
+    <p class="lead">与 SRS API <code>/api/v1/streams/</code> 实时同步。</p>
+    <div class="card">
+      <table>
+        <thead><tr><th>App</th><th>Stream</th><th>客户端</th><th>入站 kbps</th><th>出站 kbps</th><th>创建时间</th></tr></thead>
+        <tbody id="srs-streams-tbody"><tr><td colspan="6" class="placeholder" style="border:0">加载中…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel" data-panel="srs-config">
+    <h2>SRS · 服务配置</h2>
+    <div class="card">
+      <table>
+        <thead><tr><th>项</th><th>值</th></tr></thead>
+        <tbody>
+          <tr><td>配置文件</td><td><code>baremetal/srs.conf</code></td></tr>
+          <tr><td>RTMP 端口</td><td>1935</td></tr>
+          <tr><td>HTTP Server</td><td>8080</td></tr>
+          <tr><td>HTTP API</td><td>1985</td></tr>
+          <tr><td>WebRTC</td><td>8000 (UDP+TCP), candidate <code id="rtc-candidate">—</code></td></tr>
+          <tr><td>max_connections</td><td>800</td></tr>
+          <tr><td>HLS 分片</td><td>2s / 窗口 10s</td></tr>
+          <tr><td>systemd</td><td><code>srs.service</code>, Restart=on-failure</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 系统设置 -->
+  <section class="panel" data-panel="system">
+    <h2>系统设置</h2>
+    <div class="grid">
+      <div class="card"><h3>门户版本</h3><div class="big" style="font-size:18px">walle-ai v0.1</div><div class="sub">2026-11-16 原型</div></div>
+      <div class="card"><h3>服务器时区</h3><div class="big" style="font-size:18px" id="tz">-</div></div>
+      <div class="card"><h3>Nginx 门户</h3><div class="big" style="font-size:18px:"><span class="tag ok">运行中</span></div><div class="sub">8088 / 手动启停</div></div>
+      <div class="card"><h3>EMQX License</h3><div class="big" style="font-size:18px" id="lic-type">-</div><div class="sub" id="lic-expiry">-</div></div>
+    </div>
+    <div style="height:14px"></div>
+    <div class="card">
+      <h3>维护动作</h3>
+      <div style="display:flex; gap:10px; flex-wrap:wrap">
+        <button onclick="restartSrs()" class="logout" style="color:var(--accent); border-color:#2a3a55">重启 SRS</button>
+        <button onclick="restartEmqx()" class="logout" style="color:var(--accent2); border-color:#1f4a33">重启 EMQX</button>
+        <button onclick="alert('TODO：清理过期录像')" class="logout">清理过期录像</button>
+        <button onclick="alert('TODO：导出诊断包')" class="logout">导出诊断包</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 普通用户管理 -->
+  <section class="panel" data-panel="users">
+    <h2>普通用户管理</h2>
+    <div class="placeholder">规划中：存储在 MySQL/Postgres；每条记录关联 0..N 台设备；创建时同步生成 EMQX 凭据并下发到小车。</div>
+  </section>
+
+  <!-- 日志 -->
+  <section class="panel" data-panel="logs">
+    <h2>日志</h2>
+    <div class="placeholder">规划中：汇聚 EMQX 连接日志、SRS 推流日志、门户登录日志，按时间范围和级别过滤。</div>
+  </section>
+
+</main>
+
+<script>
+const TOKEN_KEY = "walle_token";
+const ROLE_KEY  = "walle_role";
+const USER_KEY  = "walle_user";
+
+if (!sessionStorage.getItem(TOKEN_KEY)) location.replace("/");
+if (sessionStorage.getItem(ROLE_KEY) !== "admin") location.replace("user.html");
+
+document.getElementById("user-name").textContent = sessionStorage.getItem(USER_KEY) || "管理员";
+document.getElementById("logout").onclick = () => {
+  sessionStorage.removeItem(TOKEN_KEY);
+  sessionStorage.removeItem(ROLE_KEY);
+  sessionStorage.removeItem(USER_KEY);
+  location.replace("/");
+};
+
+// Menu interaction
+const nav = document.getElementById("nav");
+const panels = document.querySelectorAll(".panel");
+const crumb = document.getElementById("crumb");
+function showPanel(name) {
+  panels.forEach(p => p.classList.toggle("active", p.dataset.panel === name));
+  const el = nav.querySelector(`.menu-item[data-panel="${name}"]`);
+  nav.querySelectorAll(".menu-item").forEach(i => i.classList.remove("active"));
+  if (el) { el.classList.add("active"); crumb.textContent = el.textContent.trim(); }
+}
+nav.querySelectorAll(".menu-item").forEach(i => i.addEventListener("click", () => showPanel(i.dataset.panel)));
+nav.querySelectorAll(".menu-group-title").forEach(t => t.addEventListener("click", () => {
+  t.parentElement.classList.toggle("open");
+}));
+
+// --- 加载实时数据 ---
+async function fetchJSON(url) {
+  const r = await fetch(url, { cache: "no-store" });
+  if (!r.ok) throw new Error(url + " -> " + r.status);
+  return r.json();
+}
+function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v ?? "-"; }
+function tagOk(id)  { const e = document.getElementById(id); if (e) { e.className = "tag ok";   e.textContent = "正常"; } }
+function tagWarn(id){ const e = document.getElementById(id); if (e) { e.className = "tag warn"; e.textContent = "检查中"; } }
+function tagBad(id) { const e = document.getElementById(id); if (e) { e.className = "tag bad";  e.textContent = "异常"; } }
+
+async function loadEMQX() {
+  try {
+    const [nodes, clients, subs, metrics] = await Promise.all([
+      fetchJSON("/emqx-api/nodes"),
+      fetchJSON("/emqx-api/clients?limit=1"),
+      fetchJSON("/emqx-api/subscriptions?limit=1"),
+      fetchJSON("/emqx-api/metrics"),
+    ]);
+    const n = Array.isArray(nodes) ? nodes[0] : null;
+    set("emqx-node", n ? n.node_status : "-");
+    set("emqx-ver", n ? ("v" + n.version + " · " + n.edition) : "-");
+    set("emqx-clients", clients.meta ? clients.meta.count : "-");
+    set("mq-conn", clients.meta ? clients.meta.count : "-");
+    set("mq-sub", subs.meta ? subs.meta.count : "-");
+
+    // 从 metrics 数组里挑两个字段（EMQX metrics 返回数组）
+    if (Array.isArray(metrics) && metrics[0]) {
+      const f = metrics[0].fields || {};
+      set("mq-in",  (f.incoming_messages_received || "-"));
+      set("mq-out", (f.outgoing_messages_sent    || "-"));
+    }
+
+    // license: 从 nodes 的第一个节点里找不到，跳过
+    const ed = (n && n.edition) || "Community";
+    set("lic-type", ed);
+  } catch (e) {
+    console.warn("EMQX load failed", e);
+  }
+}
+
+async function loadSRS() {
+  try {
+    const [streams, clients] = await Promise.all([
+      fetchJSON("/srs-api/streams/"),
+      fetchJSON("/srs-api/clients/"),
+    ]);
+    const arr = streams.streams || [];
+    set("srs-streams",       arr.length);
+    set("srs-over-streams",  arr.length);
+    set("srs-over-clients",  clients.total ?? "-");
+    let recv = 0, send = 0;
+    arr.forEach(s => { if (s.kbps) { recv += s.kbps.recv_30s || 0; send += s.kbps.send_30s || 0; } });
+    set("srs-over-recv", recv.toFixed(0));
+    set("srs-over-send", send.toFixed(0));
+
+    // 填充流表
+    const tb = document.getElementById("srs-streams-tbody"); tb.innerHTML = "";
+    if (!arr.length) {
+      tb.innerHTML = `<tr><td colspan="6" class="placeholder" style="border:0">当前无推流</td></tr>`;
+    } else {
+      arr.forEach(s => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${s.app}</td><td>${s.name}</td>
+          <td>${(s.clients||[]).length}</td>
+          <td>${s.kbps ? (s.kbps.recv_30s||0).toFixed(0) : "-"}</td>
+          <td>${s.kbps ? (s.kbps.send_30s||0).toFixed(0) : "-"}</td>
+          <td>${s.vhost || "-"}</td>`;
+        tb.appendChild(tr);
+      });
+    }
+  } catch (e) {
+    console.warn("SRS load failed", e);
+  }
+}
+
+async function checkServices() {
+  const checks = [
+    { id: "st-emqx-dash",  url: "/emqx-api/nodes" },
+    { id: "st-emqx-mqtt",  url: "/emqx-api/nodes" },
+    { id: "st-srs-rtmp",   url: "/srs-api/streams/" },
+    { id: "st-srs-http",   url: "/srs-api/streams/" },
+    { id: "st-srs-rtc",    url: "/srs-api/streams/" },
+  ];
+  for (const c of checks) {
+    try { await fetchJSON(c.url); tagOk(c.id); }
+    catch (e) { tagBad(c.id); }
+  }
+}
+
+async function fillStatic() {
+  try {
+    const cfg = await fetch("/srs-api/versions/").then(r => r.json());
+    const ver = cfg && cfg.data && cfg.data.version ? cfg.data.version : "-";
+    set("srs-ver", ver);
+  } catch (e) {}
+  set("tz", Intl.DateTimeFormat().resolvedOptions().timeZone);
+  set("rtc-candidate", "192.168.31.114 (见 srs.conf)");
+}
+
+// 重启按钮（sudo systemctl，需用户确认；在真实部署中建议通过后端 BFF 执行而不是直接调用）
+function restartSrs() {
+  if (!confirm("确认重启 SRS？当前推流会中断。")) return;
+  alert("已触发（演示环境：请在宿主机执行 sudo systemctl restart srs）");
+}
+function restartEmqx() {
+  if (!confirm("确认重启 EMQX？MQTT 客户端会断开重连。")) return;
+  alert("已触发（演示环境：请在宿主机执行 sudo systemctl restart emqx）");
+}
+
+loadEMQX(); loadSRS(); checkServices(); fillStatic();
+setInterval(() => { loadEMQX(); loadSRS(); }, 5000);
+</script>
+
+</body>
+</html>

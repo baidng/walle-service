@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>walle-ai · 控制台</title>
+<style>
+  :root {
+    --bg:#0f1115; --side:#14171d; --card:#181b22; --line:#2a2f3a;
+    --text:#e6e9ef; --muted:#9aa4b2; --accent:#2ecc71; --warn:#f1c40f; --bad:#e74c3c; --info:#4c8dff;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: var(--bg); color: var(--text);
+         display: grid; grid-template-columns: 220px 1fr; grid-template-rows: 56px 1fr;
+         grid-template-areas: "side head" "side main"; }
+
+  aside { grid-area: side; background: var(--side); border-right: 1px solid var(--line);
+          display: flex; flex-direction: column; }
+  .brand { padding: 18px 20px 14px; font-size: 18px; font-weight: 700;
+           border-bottom: 1px solid var(--line); }
+  .brand span { color: var(--accent); }
+  .brand small { display: block; margin-top: 2px; font-size: 11px; color: var(--muted); font-weight: 400; }
+
+  nav { flex: 1; padding: 10px; }
+  .menu-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 12px; border-radius: 8px; font-size: 14px; color: var(--muted);
+    cursor: pointer; margin-bottom: 2px;
+  }
+  .menu-item:hover { background: #1b1f27; color: var(--text); }
+  .menu-item.active { background: #14241d; color: var(--accent); }
+  .menu-item .ico { width: 18px; text-align: center; }
+
+  header { grid-area: head; background: var(--side); border-bottom: 1px solid var(--line);
+           display: flex; align-items: center; padding: 0 20px; gap: 16px; }
+  .crumb { color: var(--muted); font-size: 13px; }
+  .crumb b { color: var(--text); font-weight: 500; }
+  header .spacer { flex: 1; }
+  .user-chip { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .user-chip .badge { background: var(--accent); color: #0f1115; font-size: 11px; font-weight: 600;
+                      padding: 2px 8px; border-radius: 10px; }
+  .logout { padding: 6px 12px; border: 1px solid var(--line); background: transparent; color: var(--muted);
+            border-radius: 6px; cursor: pointer; font-size: 12px; }
+  .logout:hover { color: var(--text); border-color: var(--muted); }
+
+  main { grid-area: main; padding: 20px; overflow-y: auto; }
+  .panel { display: none; }
+  .panel.active { display: block; }
+  .panel h2 { margin: 0 0 14px; font-size: 18px; }
+  .panel p.lead { color: var(--muted); margin: 0 0 20px; font-size: 14px; }
+
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  .card h3 { margin: 0 0 10px; font-size: 14px; color: var(--muted); font-weight: 500; }
+  .card .big { font-size: 26px; font-weight: 600; }
+  .card .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; background: #12151b; }
+
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; }
+  .tag.ok { background: #14311f; color: var(--accent); }
+  .tag.warn { background: #3a3011; color: var(--warn); }
+  .tag.bad { background: #3a1a1a; color: var(--bad); }
+  .tag.info { background: #1a2a3a; color: var(--info); }
+
+  .placeholder { color: var(--muted); font-size: 13px; padding: 24px; text-align: center;
+                 border: 1px dashed var(--line); border-radius: 8px; background: #12151b; }
+
+  /* 设备列表 */
+  .device-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+  .device-card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px;
+                 cursor: pointer; transition: border-color .12s, transform .12s; }
+  .device-card:hover { border-color: var(--accent); transform: translateY(-1px); }
+  .device-card .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .device-card .name { font-size: 15px; font-weight: 600; }
+  .device-card .mid { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+  .device-card .kv { font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; }
+  .device-card .kv b { color: var(--text); font-weight: 500; }
+
+  /* 实时监控 */
+  .monitor-wrap { display: grid; gap: 14px; grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr)); }
+  @media (max-width: 900px) { .monitor-wrap { grid-template-columns: 1fr; } }
+
+  .video-box { background: #000; border-radius: 10px; overflow: hidden; aspect-ratio: 16/9; position: relative; }
+  .video-box video { width: 100%; height: 100%; background: #000; }
+  .video-overlay { position: absolute; inset: 0; display:flex; align-items:center; justify-content:center;
+                   color: var(--muted); font-size: 13px; flex-direction: column; gap: 10px; }
+  .video-overlay button { padding: 8px 16px; border-radius: 6px; border: 1px solid var(--line);
+                          background: rgba(20,23,29,.9); color: var(--text); cursor: pointer; font-size: 13px; }
+
+  .control-pad { display: grid; grid-template-columns: repeat(3, 60px); gap: 8px; justify-content: center;
+                 margin: 10px 0; }
+  .btn-pad { width: 60px; height: 60px; border-radius: 10px; border: 1px solid var(--line);
+             background: #12151b; color: var(--text); font-size: 20px; cursor: pointer; transition: background .1s; }
+  .btn-pad:hover { background: #1b1f27; border-color: var(--accent); }
+  .btn-pad:active { background: #14241d; }
+  .btn-pad.empty { visibility: hidden; }
+
+  .row-btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .row-btns button { padding: 8px 14px; border-radius: 6px; border: 1px solid var(--line);
+                     background: #12151b; color: var(--text); cursor: pointer; font-size: 13px; }
+  .row-btns button:hover { border-color: var(--accent); }
+  .row-btns button.rec { color: var(--bad); border-color: #3a1a1a; }
+  .row-btns button.rec.on { background: #3a1a1a; animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .5; } }
+</style>
+</head>
+<body>
+
+<aside>
+  <div class="brand">walle<span>-ai</span>
+    <small>小车控制台</small>
+  </div>
+  <nav id="nav">
+    <div class="menu-item active" data-panel="devices"><span class="ico">🚗</span>设备列表</div>
+    <div class="menu-item" data-panel="device-info"><span class="ico">📋</span>设备信息</div>
+    <div class="menu-item" data-panel="monitor"><span class="ico">📹</span>实时监控</div>
+    <div class="menu-item" data-panel="recordings"><span class="ico">🎥</span>视频录像</div>
+    <div class="menu-item" data-panel="alarms"><span class="ico">⚠️</span>告警</div>
+  </nav>
+</aside>
+
+<header>
+  <div class="crumb">控制台 / <b id="crumb">设备列表</b></div>
+  <div class="spacer"></div>
+  <div class="user-chip">
+    <span id="user-name">—</span>
+    <span class="badge">普通用户</span>
+    <button class="logout" id="logout">退出</button>
+  </div>
+</header>
+
+<main id="main">
+
+  <!-- 设备列表 -->
+  <section class="panel active" data-panel="devices">
+    <h2>我的设备</h2>
+    <p class="lead">当前账号下授权的小车；点击任意卡片进入设备详情或实时监控。</p>
+    <div class="device-grid" id="device-grid">
+      <!-- 动态填充 -->
+    </div>
+  </section>
+
+  <!-- 设备信息 -->
+  <section class="panel" data-panel="device-info">
+    <h2>设备信息</h2>
+    <p class="lead">选中设备的运行参数、传感器读数与 MQTT 心跳状态。</p>
+    <div id="device-info-body" class="placeholder">请先在“设备列表”中选择一台设备</div>
+  </section>
+
+  <!-- 实时监控 -->
+  <section class="panel" data-panel="monitor">
+    <h2>实时监控 · <span id="monitor-dev" style="color:var(--muted); font-size:14px">-</span></h2>
+    <p class="lead">左侧为视频画面（HTTP-FLV），右侧可下发运动控制指令；录像需在设备端启用 DVR。</p>
+    <div class="monitor-wrap">
+      <div class="card" style="padding:0; overflow:hidden">
+        <div class="video-box">
+          <video id="player" controls muted autoplay playsinline></video>
+          <div class="video-overlay" id="video-overlay">
+            <div>等待点击播放…</div>
+            <button id="play-btn">▶ 播放 / 重连</button>
+          </div>
+        </div>
+        <div style="padding:12px 14px; border-top:1px solid var(--line); font-size:12px; color:var(--muted);
+                    display:flex; justify-content:space-between">
+          <span id="video-status">未连接</span>
+          <span>分辨率 / 码率：来自 SRS → 小车</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>运动控制</h3>
+        <div class="control-pad">
+          <button class="btn-pad" data-cmd="forward">▲</button>
+          <button class="btn-pad empty"></button>
+          <button class="btn-pad" data-cmd="turn-right">▶</button>
+          <button class="btn-pad" data-cmd="turn-left">◀</button>
+          <button class="btn-pad" data-cmd="stop" style="color:var(--bad)">■</button>
+          <button class="btn-pad empty"></button>
+          <button class="btn-pad empty"></button>
+          <button class="btn-pad" data-cmd="backward">▼</button>
+          <button class="btn-pad empty"></button>
+        </div>
+        <div style="text-align:center; color:var(--muted); font-size:11px">按键松开自动停止 / SRS RtmpToRtc 或 HTTP-FLV 回传</div>
+
+        <h3 style="margin-top:18px">录像 & 模式</h3>
+        <div class="row-btns">
+          <button id="btn-rec" class="rec" onclick="toggleRec()">● 开始录像</button>
+          <button onclick="sendCmd('mode', 'auto')">自主巡航</button>
+          <button onclick="sendCmd('mode', 'manual')">手动模式</button>
+          <button onclick="sendCmd('horn', 'on')">鸣笛</button>
+          <button onclick="sendCmd('light', 'toggle')">切灯</button>
+        </div>
+
+        <h3 style="margin-top:18px">最近指令</h3>
+        <div style="max-height:120px; overflow-y:auto; font-size:12px; color:var(--muted); font-family:monospace" id="cmd-log">—</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 视频录像 -->
+  <section class="panel" data-panel="recordings">
+    <h2>视频录像</h2>
+    <p class="lead">录像文件存放在设备本地 SD 卡或 NAS，由 SRS DVR 录制后自动索引。</p>
+    <div class="placeholder">规划中：按设备 / 日期检索、在线回看、一键下载、告警片段自动关联。</div>
+  </section>
+
+  <!-- 告警 -->
+  <section class="panel" data-panel="alarms">
+    <h2>告警</h2>
+    <p class="lead">由小车上报的碰撞、低电量、信号丢失等事件，从 <code>walle/{id}/alarm</code> 订阅聚合。</p>
+    <div class="card">
+      <table>
+        <thead><tr><th>时间</th><th>设备</th><th>级别</th><th>类型</th><th>说明</th><th>状态</th></tr></thead>
+        <tbody id="alarm-tbody">
+          <tr><td colspan="6" class="placeholder" style="border:0">暂无告警</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+</main>
+
+<script src="/srs/players/js/mpegts-1.7.3.min.js"></script>
+<script>
+const TOKEN_KEY = "walle_token";
+const ROLE_KEY  = "walle_role";
+const USER_KEY  = "walle_user";
+if (!sessionStorage.getItem(TOKEN_KEY)) location.replace("/");
+if (sessionStorage.getItem(ROLE_KEY) === "admin") location.replace("admin.html");
+
+document.getElementById("user-name").textContent = sessionStorage.getItem(USER_KEY) || "用户";
+document.getElementById("logout").onclick = () => {
+  sessionStorage.removeItem(TOKEN_KEY);
+  sessionStorage.removeItem(ROLE_KEY);
+  sessionStorage.removeItem(USER_KEY);
+  location.replace("/");
+};
+
+// ---- 菜单 ----
+const nav = document.getElementById("nav");
+const panels = document.querySelectorAll(".panel");
+const crumb = document.getElementById("crumb");
+function showPanel(name) {
+  panels.forEach(p => p.classList.toggle("active", p.dataset.panel === name));
+  const el = nav.querySelector(`.menu-item[data-panel="${name}"]`);
+  nav.querySelectorAll(".menu-item").forEach(i => i.classList.remove("active"));
+  if (el) { el.classList.add("active"); crumb.textContent = el.textContent.trim(); }
+}
+nav.querySelectorAll(".menu-item").forEach(i => i.addEventListener("click", () => {
+  showPanel(i.dataset.panel);
+  // 切换到监控页时尝试自动连流
+  if (i.dataset.panel === "monitor") tryStartPlayer();
+}));
+
+// ---- 模拟设备列表（实际从平台后端 / 或 MQTT topic 同步）----
+const DEVICES = [
+  { id: "walle-01", name: "小车 01 · 客厅巡视", online: true,  batt: 78, loc: "客厅",  stream: "live/test" },
+  { id: "walle-02", name: "小车 02 · 花园巡逻", online: true,  batt: 42, loc: "后花园", stream: "live/walle02" },
+  { id: "walle-03", name: "小车 03 · 仓库巡检", online: false, batt: 96, loc: "仓库",   stream: "live/walle03" },
+];
+
+let selectedDevice = DEVICES[0];
+
+function renderDevices() {
+  const grid = document.getElementById("device-grid"); grid.innerHTML = "";
+  DEVICES.forEach(d => {
+    const card = document.createElement("div");
+    card.className = "device-card";
+    card.onclick = () => selectDevice(d);
+    card.innerHTML = `
+      <div class="top">
+        <div class="name">${d.name}</div>
+        <span class="tag ${d.online ? "ok" : "bad"}">${d.online ? "在线" : "离线"}</span>
+      </div>
+      <div class="mid">${d.id} · ${d.loc}</div>
+      <div class="kv"><span>电量</span><b>${d.batt}%</b></div>
+      <div class="kv"><span>推流</span><b>${d.stream}</b></div>
+    `;
+    grid.appendChild(card);
+  });
+}
+function selectDevice(d) {
+  selectedDevice = d;
+  document.getElementById("monitor-dev").textContent = d.name;
+  renderDeviceInfo();
+  showPanel("device-info");
+}
+
+function renderDeviceInfo() {
+  const d = selectedDevice;
+  const body = document.getElementById("device-info-body");
+  body.outerHTML = `
+    <div id="device-info-body" class="grid" style="all:unset; display:grid; gap:14px;
+       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr))">
+      <div class="card"><h3>设备 ID</h3><div class="big" style="font-size:18px">${d.id}</div></div>
+      <div class="card"><h3>在线状态</h3><div><span class="tag ${d.online ? "ok" : "bad"}">${d.online ? "在线" : "离线"}</span></div></div>
+      <div class="card"><h3>电量</h3><div class="big">${d.batt}%</div><div class="sub">每 30s 上报</div></div>
+      <div class="card"><h3>当前位置</h3><div class="big" style="font-size:18px">${d.loc}</div></div>
+      <div class="card"><h3>MQTT Topic 前缀</h3><div style="font-family:monospace; font-size:12px">walle/${d.id}/cmd<br>walle/${d.id}/state<br>walle/${d.id}/alarm</div></div>
+      <div class="card"><h3>推流地址</h3><div style="font-family:monospace; font-size:12px">/srs/${d.stream}.flv<br>rtmp://<host>:1935/${d.stream}</div></div>
+    </div>`;
+}
+
+renderDevices();
+
+// ---- FLV 播放器 ----
+let mpegPlayer = null;
+function tryStartPlayer() {
+  const d = selectedDevice;
+  if (!d || !d.online) {
+    document.getElementById("video-status").textContent = "设备离线，无法拉流";
+    document.getElementById("video-overlay").style.display = "flex";
+    return;
+  }
+  if (typeof mpegts === "undefined") {
+    document.getElementById("video-status").textContent = "mpegts.js 未加载";
+    return;
+  }
+  const url = `/srs/${d.stream}.flv`;
+  const video = document.getElementById("player");
+  document.getElementById("video-status").textContent = "连接中…";
+  if (mpegPlayer) { try { mpegPlayer.unload(); mpegPlayer.detachMediaElement(); mpegPlayer.destroy(); } catch(e){} }
+  mpegPlayer = mpegts.createPlayer({ type: "flv", isLive: true, url, hasAudio: false });
+  mpegPlayer.attachMediaElement(video);
+  mpegPlayer.load();
+  mpegPlayer.on(mpegts.Events.ERROR, (t, d) => {
+    document.getElementById("video-status").textContent = "错误：" + t;
+  });
+  mpegPlayer.on(mpegts.Events.LOADING_COMPLETE, () => {
+    document.getElementById("video-status").textContent = "流结束";
+  });
+  video.play().then(() => {
+    document.getElementById("video-overlay").style.display = "none";
+    document.getElementById("video-status").textContent = "播放中：" + url;
+  }).catch(e => {
+    document.getElementById("video-status").textContent = "浏览器拦截自动播放，请手动点击";
+  });
+}
+document.getElementById("play-btn").onclick = tryStartPlayer;
+
+// ---- 运动控制 ----
+const cmdLog = document.getElementById("cmd-log");
+function logCmd(line) {
+  cmdLog.textContent = new Date().toLocaleTimeString() + "  " + line + "\n" + cmdLog.textContent;
+}
+function sendCmd(method, value) {
+  // 真实实现：fetch 到 /walle-api/cmd → 后端 publish 到 walle/{device_id}/cmd
+  // 此处前端占位，展示调用
+  logCmd(`${method} = ${value}`);
+  console.log("[cmd]", selectedDevice.id, method, value);
+}
+document.querySelectorAll(".btn-pad[data-cmd]").forEach(btn => {
+  const cmd = btn.dataset.cmd;
+  const down = (e) => { e.preventDefault(); sendCmd("move", cmd); };
+  const up   = (e) => { e.preventDefault(); sendCmd("move", "stop"); };
+  btn.addEventListener("mousedown", down); btn.addEventListener("mouseup", up);
+  btn.addEventListener("mouseleave", up);
+  btn.addEventListener("touchstart", down, { passive:false });
+  btn.addEventListener("touchend",   up,   { passive:false });
+});
+
+// ---- 录像 ----
+let recOn = false;
+function toggleRec() {
+  recOn = !recOn;
+  const b = document.getElementById("btn-rec");
+  if (recOn) { b.classList.add("on"); b.textContent = "■ 停止录像"; logCmd("录像 START"); }
+  else       { b.classList.remove("on"); b.textContent = "● 开始录像"; logCmd("录像 STOP"); }
+}
+
+// ---- 告警（静态占位 + 订阅示例）----
+const ALARMS = [
+  { t: "2026-11-16 10:21:03", dev: "walle-01", level: "warn",  type: "low_battery", msg: "电量 < 20%", status: "已处理" },
+  { t: "2026-11-16 09:42:17", dev: "walle-02", level: "bad",   type: "collision",   msg: "前防撞触发",  status: "处理中" },
+  { t: "2026-11-15 23:11:58", dev: "walle-03", level: "info",  type: "offline",     msg: "心跳丢失 > 3min", status: "自动恢复" },
+];
+function renderAlarms() {
+  const tb = document.getElementById("alarm-tbody"); tb.innerHTML = "";
+  if (!ALARMS.length) { tb.innerHTML = `<tr><td colspan="6" class="placeholder" style="border:0">暂无告警</td></tr>`; return; }
+  ALARMS.forEach(a => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${a.t}</td><td>${a.dev}</td>
+      <td><span class="tag ${a.level}">${a.level === "bad" ? "严重" : a.level === "warn" ? "警告" : "提示"}</span></td>
+      <td>${a.type}</td><td>${a.msg}</td><td>${a.status}</td>`;
+    tb.appendChild(tr);
+  });
+}
+renderAlarms();
+</script>
+</body>
+</html>

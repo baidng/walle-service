@@ -1,0 +1,72 @@
+# 门户 Nginx 配置模板
+#
+# 使用方法：
+#   cp baremetal/nginx/nginx.conf.example baremetal/nginx/nginx.conf
+#   然后把下方 <BASE64(api_key:api_secret)> 替换为真实凭据：
+#     KEY=$(jq -r .api_key baremetal/emqx_api_key.json)
+#     SECRET=$(jq -r .api_secret baremetal/emqx_api_key.json)
+#     printf '%s:%s' "$KEY" "$SECRET" | base64 -w0
+# 真实的 nginx.conf 含密钥，已在 .gitignore 中排除，不要提交。
+
+worker_processes 1;
+pid /home/gs/01_walle_service/baremetal/nginx/nginx.pid;
+error_log /home/gs/01_walle_service/baremetal/nginx/error.log warn;
+
+events { worker_connections 1024; }
+
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+    access_log /home/gs/01_walle_service/baremetal/nginx/access.log;
+
+    client_body_temp_path /home/gs/01_walle_service/baremetal/nginx/temp/client_body;
+    proxy_temp_path       /home/gs/01_walle_service/baremetal/nginx/temp/proxy;
+    fastcgi_temp_path     /home/gs/01_walle_service/baremetal/nginx/temp/fastcgi;
+    uwsgi_temp_path       /home/gs/01_walle_service/baremetal/nginx/temp/uwsgi;
+    scgi_temp_path        /home/gs/01_walle_service/baremetal/nginx/temp/scgi;
+
+    server {
+        listen 8088;
+        server_name _;
+
+        root /home/gs/01_walle_service/baremetal/nginx/portal;
+        index index.html;
+
+        location / { try_files $uri $uri/ /index.html; }
+
+        location = /auth/login {
+            proxy_pass http://127.0.0.1:18083/api/v5/login;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header Content-Type application/json;
+            proxy_read_timeout 60s;
+        }
+
+        location /emqx-api/ {
+            proxy_pass http://127.0.0.1:18083/api/v5/;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header Authorization "Basic <BASE64(api_key:api_secret)>";
+            proxy_read_timeout 60s;
+        }
+
+        location /srs-api/ {
+            proxy_pass http://127.0.0.1:1985/api/v1/;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_read_timeout 60s;
+        }
+
+        location /srs/ {
+            proxy_pass http://127.0.0.1:8080/;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_buffering off;
+            proxy_read_timeout 3600s;
+        }
+
+        location = /metrics {
+            proxy_pass http://127.0.0.1:9972/metrics;
+        }
+    }
+}
