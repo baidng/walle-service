@@ -251,7 +251,7 @@ EMQX REST API
 | 基本信息 | `/emqx-api/nodes`、`/emqx-api/clients`、`/srs-api/streams/`、`/srs-api/versions/` | 已实现 |
 | 服务状态表 | 同上接口按 5 个端口逐项探活 | 已实现（探活是接口级，非端口级） |
 | MQTT · 概览 | `/emqx-api/metrics` 字段 + 订阅数 | 已实现 |
-| MQTT · 用户管理 | — | 规划：平台用户与 MQTT 凭据映射 |
+| MQTT · 用户管理 | `/api/users`（walle_api.py → EMQX 内置数据库） | 已实现：新增/删除/改密码，角色管理者/设备 |
 | MQTT · 主题配置 | 静态主题规范表 | 已实现（文档性质） |
 | MQTT · 规则引擎 | — | 规划：alarm → 存储/Webhook |
 | SRS · 概览 | `streams` + `clients` 聚合带宽 | 已实现 |
@@ -325,9 +325,9 @@ recording (id, device_id, path, start_at, end_at, size, trigger)
 ## 13. 演进路线
 
 1. 增加 BFF 层：服务端会话、角色校验、指令下发、运维动作。
-2. 接入数据库，落地用户/设备/告警/录像模型。
+2. 接入数据库，落地设备/告警/录像模型（用户角色已用 SQLite 落地）。
 3. 设备侧 MQTT 凭据与 ACL 自动化下发。
-4. 管理员控制台补齐用户管理、规则引擎、日志检索。
+4. 管理员控制台补齐规则引擎、日志检索。
 5. 普通用户控制台接入真实设备与告警订阅，录像回看。
 6. 全链路 HTTPS、限流、审计。
 7. 门户与测试推流 systemd 化，去掉手工启停。

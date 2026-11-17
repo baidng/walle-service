@@ -15,6 +15,7 @@
   ▼
 Nginx（独立实例，由 walle.service 托管或手动启动）
   ├── /              → 静态门户 src/web/
+  ├── /api/          → 127.0.0.1:9000            （用户管理 API，SQLite + EMQX）
   ├── /auth/login    → 127.0.0.1:18083/api/v5/login （用户凭据校验）
   ├── /emqx-api/     → 127.0.0.1:18083/api/v5/   （反代注入 API Key）
   ├── /srs-api/      → 127.0.0.1:1985/api/v1/
@@ -81,7 +82,8 @@ Nginx（独立实例，由 walle.service 托管或手动启动）
 │   └── walle.service                  # 渲染产物，绝对路径随机器而定（不入库）
 ├── src/
 │   ├── web/                           # 门户页面：index/home/admin/user/dashboard.html
-│   └── backend/                       # 后端源码：mqtt_demo_client.py
+│   └── backend/                       # 后端：walle_api.py（用户管理 API）、mqtt_demo_client.py
+│       └── data/users.db              # 用户角色库（SQLite，运行后自动生成，不入库）
 ├── tests/                             # 测试
 ├── thirdparty/
 │   └── srs/                           # SRS 源码（v7.0-a4，约 460MB，不入库，按 7.1 自行 clone）
@@ -450,6 +452,13 @@ http {
 
         location / { try_files $uri $uri/ /index.html; }
 
+        location /api/ {
+            proxy_pass http://127.0.0.1:9000;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_read_timeout 30s;
+        }
+
         location = /auth/login {
             proxy_pass http://127.0.0.1:18083/api/v5/login;
             proxy_http_version 1.1;
@@ -599,6 +608,19 @@ sudo journalctl -u walle -n 50 --no-pager
 ```
 
 > 门户可以由 `walle.service` 托管，也可以直接手动执行 `./scripts/start-walle.sh start|status` 与 `./scripts/stop-walle.sh`（例如调试时）。
+
+### 8.4 用户管理 API（SQLite + EMQX）
+
+`src/backend/walle_api.py` 是零依赖的 Python 标准库服务，监听 `127.0.0.1:9000`，由 nginx 的 `/api/` 反代进来。
+
+- **用户名**：创建后不可修改，同时作为 EMQX 内置数据库的 `user_id`。
+- **密码**：只保存在 EMQX（sha256 + suffix 加盐），walle 不存密码。
+- **角色**：`管理者` / `设备` 二选一，保存在 `src/backend/data/users.db`（SQLite 单文件，自动创建），映射到 EMQX 的 `is_superuser`（管理者=true）。
+- **接口**：`GET/POST /api/users`、`PUT/DELETE /api/users/{用户名}`。
+
+启停已合并进门户脚本：`start-walle.sh` 会同时拉起 nginx 与 API，`stop-walle.sh` 会同时停止两者；API 日志在 `log/walle-api.log`，pid 在 `.run/nginx/walle-api.pid`。
+
+> SQLite 直接使用 Python 内置模块，不需要安装 MySQL/PostgreSQL；备份只需拷贝 `src/backend/data/users.db`。
 
 ---
 

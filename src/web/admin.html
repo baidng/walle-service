@@ -78,6 +78,21 @@
   .svc-link { color: var(--accent2); text-decoration: none; margin-left: 8px; white-space: nowrap; }
   .svc-link:hover { text-decoration: underline; }
 
+  .user-form { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+  .user-form input, .user-form select {
+    background: var(--bg); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 7px 10px; font-size: 13px; font-family: inherit;
+  }
+  .user-form input { width: 190px; }
+  .btn { background: transparent; color: var(--text); border: 1px solid var(--line);
+         border-radius: 6px; padding: 7px 14px; font-size: 13px; cursor: pointer; font-family: inherit; }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { opacity: .9; color: #fff; }
+  .btn.danger:hover { border-color: var(--bad); color: var(--bad); }
+  .row-actions { display: flex; gap: 8px; }
+  .row-actions .btn { padding: 3px 10px; font-size: 12px; }
+
   .placeholder { color: var(--muted); font-size: 13px; padding: 24px; text-align: center;
                  border: 1px dashed var(--line); border-radius: 8px; background: #12151b; }
 </style>
@@ -168,8 +183,22 @@
 
   <section class="panel" data-panel="mqtt-users">
     <h2>MQTT · 用户管理</h2>
-    <p class="lead">当前实现为 EMQX Dashboard 原生用户，后续可扩展为平台用户与 MQTT ACL 映射。</p>
-    <div class="placeholder">规划中：普通用户自动创建 MQTT 凭据（username=user_{id}），按设备 topic 前缀隔离。</div>
+    <p class="lead">用户名创建后不可修改。用户名与密码由 EMQX 内置数据库保存（密码只存在 EMQX），角色（管理者 / 设备）保存在 walle 本地。</p>
+    <div class="card">
+      <div class="user-form">
+        <input id="nu-name" placeholder="用户名" autocomplete="off" />
+        <input id="nu-pass" type="password" placeholder="密码" autocomplete="new-password" />
+        <select id="nu-role">
+          <option value="设备">设备</option>
+          <option value="管理者">管理者</option>
+        </select>
+        <button class="btn primary" id="nu-submit">添加用户</button>
+      </div>
+      <table>
+        <thead><tr><th>用户名</th><th>角色</th><th>创建时间</th><th>操作</th></tr></thead>
+        <tbody id="users-tbody"><tr><td colspan="4" style="color:var(--muted)">加载中…</td></tr></tbody>
+      </table>
+    </div>
   </section>
 
   <section class="panel" data-panel="mqtt-topics">
@@ -295,6 +324,7 @@ function showPanel(name) {
   const el = nav.querySelector(`.menu-item[data-panel="${name}"]`);
   nav.querySelectorAll(".menu-item").forEach(i => i.classList.remove("active"));
   if (el) { el.classList.add("active"); crumb.textContent = el.textContent.trim(); }
+  if (name === "mqtt-users") loadUsers();
 }
 nav.querySelectorAll(".menu-item").forEach(i => i.addEventListener("click", () => showPanel(i.dataset.panel)));
 nav.querySelectorAll(".menu-group-title").forEach(t => t.addEventListener("click", () => {
@@ -311,6 +341,103 @@ function set(id, v) { const e = document.getElementById(id); if (e) e.textConten
 function tagOk(id)  { const e = document.getElementById(id); if (e) { e.className = "tag ok";   e.textContent = "正常"; } }
 function tagWarn(id){ const e = document.getElementById(id); if (e) { e.className = "tag warn"; e.textContent = "检查中"; } }
 function tagBad(id) { const e = document.getElementById(id); if (e) { e.className = "tag bad";  e.textContent = "异常"; } }
+
+// --- 用户管理（角色存本地 SQLite，用户名/密码走 EMQX） ---
+async function apiJSON(url, opts = {}) {
+  const r = await fetch(url, {
+    cache: "no-store",
+    ...opts,
+    headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.message || (url + " -> " + r.status));
+  return data;
+}
+
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, c => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
+async function loadUsers() {
+  const tb = document.getElementById("users-tbody");
+  tb.innerHTML = '<tr><td colspan="4" style="color:var(--muted)">加载中…</td></tr>';
+  try {
+    const data = await apiJSON("/api/users");
+    if (!data.data.length) {
+      tb.innerHTML = '<tr><td colspan="4" style="color:var(--muted)">暂无用户</td></tr>';
+      return;
+    }
+    tb.innerHTML = data.data.map(u => {
+      const role = u.role
+        ? `<span class="tag ${u.role === "管理者" ? "ok" : ""}">${esc(u.role)}</span>`
+        : '<span class="tag warn">未登记</span>';
+      return `<tr>
+        <td>${esc(u.username)}</td>
+        <td>${role}</td>
+        <td>${esc(u.created_at || "-")}</td>
+        <td><div class="row-actions">
+          <button class="btn" data-act="pwd" data-user="${esc(u.username)}">改密码</button>
+          <button class="btn danger" data-act="del" data-user="${esc(u.username)}">删除</button>
+        </div></td>
+      </tr>`;
+    }).join("");
+  } catch (e) {
+    tb.innerHTML = `<tr><td colspan="4" style="color:var(--bad)">加载失败：${esc(e.message)}</td></tr>`;
+  }
+}
+
+async function createUser() {
+  const nameEl = document.getElementById("nu-name");
+  const passEl = document.getElementById("nu-pass");
+  const username = nameEl.value.trim();
+  const password = passEl.value;
+  const role = document.getElementById("nu-role").value;
+  if (!username || !password) { alert("用户名和密码都不能为空"); return; }
+  try {
+    await apiJSON("/api/users", {
+      method: "POST",
+      body: JSON.stringify({ username, password, role }),
+    });
+    nameEl.value = ""; passEl.value = "";
+    await loadUsers();
+  } catch (e) {
+    alert("创建失败：" + e.message);
+  }
+}
+
+async function changePassword(username) {
+  const password = prompt(`给 ${username} 设置新密码：`);
+  if (!password) return;
+  try {
+    await apiJSON("/api/users/" + encodeURIComponent(username), {
+      method: "PUT",
+      body: JSON.stringify({ password }),
+    });
+    alert(`已更新 ${username} 的密码`);
+  } catch (e) {
+    alert("修改失败：" + e.message);
+  }
+}
+
+async function deleteUser(username) {
+  if (!confirm(`确认删除用户 ${username}？该 MQTT 账号将立即失效。`)) return;
+  try {
+    await apiJSON("/api/users/" + encodeURIComponent(username), { method: "DELETE" });
+    await loadUsers();
+  } catch (e) {
+    alert("删除失败：" + e.message);
+  }
+}
+
+document.getElementById("nu-submit").addEventListener("click", createUser);
+document.getElementById("users-tbody").addEventListener("click", e => {
+  const btn = e.target.closest("button[data-act]");
+  if (!btn) return;
+  if (btn.dataset.act === "pwd") changePassword(btn.dataset.user);
+  if (btn.dataset.act === "del") deleteUser(btn.dataset.user);
+});
 
 async function loadEMQX() {
   try {
@@ -415,7 +542,7 @@ function restartEmqx() {
 document.getElementById("open-emqx-dash").href =
   location.protocol + "//" + location.hostname + ":18083/";
 
-loadEMQX(); loadSRS(); checkServices(); fillStatic();
+loadEMQX(); loadSRS(); checkServices(); fillStatic(); loadUsers();
 setInterval(() => { loadEMQX(); loadSRS(); }, 5000);
 </script>
 
