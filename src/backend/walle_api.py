@@ -13,7 +13,9 @@ import base64
 import contextlib
 import json
 import os
+import socket
 import sqlite3
+import struct
 import sys
 import urllib.error
 import urllib.parse
@@ -99,6 +101,34 @@ def emqx(method, path, body=None):
         return 0, {"message": f"EMQX 不可达: {exc.reason}"}
 
 
+def _mqtt_remaining(length):
+    out = bytearray()
+    while True:
+        byte = length % 128
+        length //= 128
+        if length:
+            byte |= 0x80
+        out.append(byte)
+        if not length:
+            return bytes(out)
+
+
+def mqtt_auth(username, password, host="127.0.0.1", port=1883, timeout=3):
+    """用 MQTT CONNECT 校验账号密码，等价于设备实际连上 broker 的过程。"""
+    client_id = "walle-check-" + os.urandom(4).hex()
+    payload = b""
+    for part in (client_id, username, password):
+        raw = part.encode()
+        payload += struct.pack("!H", len(raw)) + raw
+    variable = struct.pack("!H", 4) + b"MQTT" + bytes([4, 0xC2]) + struct.pack("!H", 30)
+    body = variable + payload
+    packet = bytes([0x10]) + _mqtt_remaining(len(body)) + body
+    with socket.create_connection((host, port), timeout=timeout) as sock:
+        sock.sendall(packet)
+        resp = sock.recv(4)
+    return len(resp) >= 4 and resp[0] == 0x20 and resp[3] == 0
+
+
 def emqx_users():
     status, data = emqx("GET", f"/authentication/{AUTH_ID}/users?limit=1000")
     if status != 200 or not isinstance(data, dict):
@@ -142,6 +172,8 @@ class Handler(BaseHTTPRequestHandler):
         self._json(404, {"message": "not found"})
 
     def do_POST(self):
+        if self.path == "/api/login":
+            return self.login()
         if self.path == "/api/users":
             return self.create_user()
         self._json(404, {"message": "not found"})
@@ -160,6 +192,27 @@ class Handler(BaseHTTPRequestHandler):
         return urllib.parse.unquote(self.path.rsplit("/", 1)[-1])
 
     # ---------- 业务 ----------
+    def login(self):
+        """客户登录：密码交给 EMQX 校验，角色必须是「管理者」。"""
+        body = self._body() or {}
+        username = (body.get("username") or "").strip()
+        password = body.get("password") or ""
+        if not username or not password:
+            return self._json(400, {"message": "用户名和密码不能为空"})
+        try:
+            ok = mqtt_auth(username, password)
+        except OSError:
+            return self._json(502, {"message": "无法连接 EMQX（1883），请检查服务状态"})
+        if not ok:
+            return self._json(401, {"message": "用户名或密码错误"})
+        with db() as conn:
+            row = conn.execute("SELECT role FROM users WHERE username = ?", (username,)).fetchone()
+        if row is None:
+            return self._json(403, {"message": "该账号未在 walle 登记角色，不能登录"})
+        if row["role"] != "管理者":
+            return self._json(403, {"message": "该账号角色为「设备」，不能登录"})
+        return self._json(200, {"username": username, "role": row["role"], "token": "ok"})
+
     def list_users(self):
         try:
             remote = emqx_users()

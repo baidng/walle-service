@@ -105,26 +105,29 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 
 ```text
 浏览器 index.html
-  │ POST /auth/login  {username, password}
-  ▼
-Nginx  location = /auth/login
-  │ proxy_pass http://127.0.0.1:18083/api/v5/login
-  │ 透传 Content-Type: application/json，不注入 Authorization
-  ▼
-EMQX REST API
-  ├─ 200 → { token, ... }  → 前端写入 sessionStorage → home.html
-  └─ 401 → 前端提示“用户名或密码错误”
+  ├─ 管理员 Tab → POST /auth/login  {username, password}
+  │     ▼
+  │   Nginx location = /auth/login → 18083/api/v5/login（EMQX Dashboard 账号）
+  │     ├─ 200 → { token } → home.html → admin.html
+  │     └─ 401 → 提示“用户名或密码错误”
+  │
+  └─ 客户 Tab → POST /api/login  {username, password}
+        ▼
+      walle_api.py
+        ├─ 以 MQTT CONNECT 连 1883 校验密码（等价于设备真实连接）
+        ├─ 查 SQLite 角色：仅“管理者”可登录，“设备”返回 403
+        └─ 200 → { username, role, token } → home.html → user.html
 ```
 
-对应实现：登录表单在 [index.html](../src/web/index.html#L99-L128)，反代在 [nginx.conf.example](../etc/nginx.conf.example#L41-L47)（本机实际生效的是由它复制出的 `etc/nginx.conf`）。
+对应实现：登录表单在 [index.html](../src/web/index.html)，客户登录在 [walle_api.py](../src/backend/walle_api.py)，反代在 [nginx.conf.example](../etc/nginx.conf.example)。
 
 ### 5.2 设计约束
 
-1. **认证源唯一**：用户名/密码直接由 EMQX 校验，平台不另建账号库，因此“能登录 EMQX Dashboard 的账号就能登录门户”。
-2. **角色仅是入口开关**：`walle_role` 由前端 Tab 决定，服务端不下发角色，也不校验角色。任何拿到有效账号的人都可以手动把 `walle_role` 改成 `admin` 进入管理员界面。
+1. **两套认证源**：管理员用 EMQX Dashboard 账号（`/auth/login`）；客户用 EMQX 内置数据库里的 MQTT 账号（`/api/login`），也就是「用户管理」页创建的用户名/密码。
+2. **客户登录校验角色**：服务端查 SQLite，角色必须是「管理者」，「设备」账号（小车）不能登录门户；管理员入口不做该校验。
 3. **token 不参与后续鉴权**：门户页面与查询接口均不使用该 token；真正的接口凭据是 Nginx 注入的 API Key。
-4. **失败处理**：401 → “用户名或密码错误”；其他状态码 → 显示 HTTP 状态；网络异常 → 显示错误信息。登录按钮在请求期间 `disabled`，防止重复提交。
-5. **已知缺陷**：`/auth/login` 未做限流与失败计数，存在暴力破解风险（见第 9 节）。
+4. **失败处理**：密码错误 401；角色不符 403（提示来自后端）；EMQX 不可达 502；登录按钮在请求期间 `disabled`，防止重复提交。
+5. **已知缺陷**：`/auth/login`、`/api/login`、`/api/` 均未做限流与鉴权，存在暴力破解与越权风险（见第 9 节）。
 
 ---
 
@@ -135,7 +138,8 @@ EMQX REST API
 | location | 上游 | 关键处理 | 目的 |
 |---|---|---|---|
 | `/` | 本地 portal 目录 | `try_files $uri $uri/ /index.html` | 静态页面 + SPA 式回退 |
-| `= /auth/login` | `18083/api/v5/login` | 不注入 Authorization | 用户凭据校验 |
+| `= /auth/login` | `18083/api/v5/login` | 不注入 Authorization | 管理员凭据校验 |
+| `/api/` | `127.0.0.1:9000` | 反代到 walle_api.py | 客户登录与用户管理 |
 | `/emqx-api/` | `18083/api/v5/` | 注入 `Authorization: Basic <base64(api_key:api_secret)>` | 免前端持有管理凭据 |
 | `/srs-api/` | `1985/api/v1/` | `proxy_read_timeout 60s` | 媒体查询接口 |
 | `/srs/` | `8080/` | `proxy_buffering off`、`read_timeout 3600s` | 长连接拉流（FLV/HLS/console/players） |
