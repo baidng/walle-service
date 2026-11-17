@@ -2,7 +2,7 @@
 """walle 用户管理后端
 
 职责：
-  1. 用户角色（管理者 / 设备）存在本机 SQLite；
+  1. 用户角色（客户 / 设备）存在本机 SQLite；
   2. 用户名与密码的增删改最终都调用 EMQX 内置数据库（built_in_database）；
   3. 密码只存在 EMQX（sha256），walle 不保存任何密码。
 
@@ -32,7 +32,7 @@ HOST = "127.0.0.1"
 PORT = 9000
 EMQX_BASE = "http://127.0.0.1:18083/api/v5"
 AUTH_ID = "password_based:built_in_database"
-ROLES = ("管理者", "设备")
+ROLES = ("客户", "设备")
 
 
 def load_credentials():
@@ -63,7 +63,7 @@ def init_db():
         conn.execute(
             """CREATE TABLE IF NOT EXISTS users (
                    username   TEXT PRIMARY KEY,
-                   role       TEXT NOT NULL CHECK (role IN ('管理者', '设备')),
+                   role       TEXT NOT NULL CHECK (role IN ('客户', '设备')),
                    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
                )"""
         )
@@ -193,7 +193,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------- 业务 ----------
     def login(self):
-        """客户登录：密码交给 EMQX 校验，角色必须是「管理者」。"""
+        """客户登录：密码交给 EMQX 校验，角色必须是「客户」。"""
         body = self._body() or {}
         username = (body.get("username") or "").strip()
         password = body.get("password") or ""
@@ -209,7 +209,7 @@ class Handler(BaseHTTPRequestHandler):
             row = conn.execute("SELECT role FROM users WHERE username = ?", (username,)).fetchone()
         if row is None:
             return self._json(403, {"message": "该账号未在 walle 登记角色，不能登录"})
-        if row["role"] != "管理者":
+        if row["role"] != "客户":
             return self._json(403, {"message": "该账号角色为「设备」，不能登录"})
         return self._json(200, {"username": username, "role": row["role"], "token": "ok"})
 
@@ -231,7 +231,7 @@ class Handler(BaseHTTPRequestHandler):
             }
             for name, info in remote.items()
         ]
-        users.sort(key=lambda u: (u["role"] != "管理者", u["username"]))
+        users.sort(key=lambda u: (u["role"] != "客户", u["username"]))
         return self._json(200, {"data": users})
 
     def create_user(self):
@@ -244,11 +244,11 @@ class Handler(BaseHTTPRequestHandler):
         if not username or not password:
             return self._json(400, {"message": "用户名和密码不能为空"})
         if role not in ROLES:
-            return self._json(400, {"message": "角色只能是 管理者 或 设备"})
+            return self._json(400, {"message": "角色只能是 客户 或 设备"})
         status, data = emqx(
             "POST",
             f"/authentication/{AUTH_ID}/users",
-            {"user_id": username, "password": password, "is_superuser": role == "管理者"},
+            {"user_id": username, "password": password, "is_superuser": False},
         )
         if status not in (200, 201, 204):
             return self._json(status or 502, {"message": f"EMQX 创建用户失败: {data}"})
@@ -273,7 +273,7 @@ class Handler(BaseHTTPRequestHandler):
         status, data = emqx(
             "PUT",
             emqx_user_path(username),
-            {"password": password, "is_superuser": row["role"] == "管理者"},
+            {"password": password, "is_superuser": False},
         )
         if status not in (200, 201, 204):
             return self._json(status or 502, {"message": f"EMQX 修改密码失败: {data}"})

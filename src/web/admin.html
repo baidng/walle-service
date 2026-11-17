@@ -183,14 +183,14 @@
 
   <section class="panel" data-panel="mqtt-users">
     <h2>MQTT · 用户管理</h2>
-    <p class="lead">用户名创建后不可修改。用户名与密码由 EMQX 内置数据库保存（密码只存在 EMQX），角色（管理者 / 设备）保存在 walle 本地。</p>
+    <p class="lead">用户名创建后不可修改。用户名与密码由 EMQX 内置数据库保存（密码只存在 EMQX），角色（客户 / 设备）保存在 walle 本地。</p>
     <div class="card">
       <div class="user-form">
         <input id="nu-name" placeholder="用户名" autocomplete="off" />
         <input id="nu-pass" type="password" placeholder="密码" autocomplete="new-password" />
         <select id="nu-role">
           <option value="设备">设备</option>
-          <option value="管理者">管理者</option>
+          <option value="客户">客户</option>
         </select>
         <button class="btn primary" id="nu-submit">添加用户</button>
       </div>
@@ -371,7 +371,7 @@ async function loadUsers() {
     }
     tb.innerHTML = data.data.map(u => {
       const role = u.role
-        ? `<span class="tag ${u.role === "管理者" ? "ok" : ""}">${esc(u.role)}</span>`
+        ? `<span class="tag ${u.role === "客户" ? "ok" : ""}">${esc(u.role)}</span>`
         : '<span class="tag warn">未登记</span>';
       return `<tr>
         <td>${esc(u.username)}</td>

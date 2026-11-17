@@ -615,7 +615,7 @@ sudo journalctl -u walle -n 50 --no-pager
 
 - **用户名**：创建后不可修改，同时作为 EMQX 内置数据库的 `user_id`。
 - **密码**：只保存在 EMQX（sha256 + suffix 加盐），walle 不存密码。
-- **角色**：`管理者` / `设备` 二选一，保存在 `src/backend/data/users.db`（SQLite 单文件，自动创建），映射到 EMQX 的 `is_superuser`（管理者=true）。
+- **角色**：`客户` / `设备` 二选一，保存在 `src/backend/data/users.db`（SQLite 单文件，自动创建）；两种角色在 EMQX 侧都不勾选「是否为超级用户」（`is_superuser=false`），权限由 ACL 控制。
 - **接口**：`GET/POST /api/users`、`PUT/DELETE /api/users/{用户名}`。
 
 启停已合并进门户脚本：`start-walle.sh` 会同时拉起 nginx 与 API，`stop-walle.sh` 会同时停止两者；API 日志在 `log/walle-api.log`，pid 在 `.run/nginx/walle-api.pid`。

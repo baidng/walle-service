@@ -103,7 +103,7 @@ form.addEventListener("submit", async (e) => {
   btn.disabled = true;
   btn.textContent = "登录中…";
   try {
-    // 客户：走 walle 用户表，只有“管理者”角色可登录；管理员：EMQX 原生账号
+    // 客户：走 walle 用户表，只有“客户”角色可登录；管理员：EMQX 原生账号
     const url = role === "user" ? "/api/login" : "/auth/login";
     const res = await fetch(url, {
       method: "POST",
