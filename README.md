@@ -31,7 +31,7 @@ walle 是一个面向树莓派小车的远程控制平台：通过 **MQTT** 下�
 
 ## 快速开始
 
-1. 部署服务端（EMQX + SRS + 门户）：见 [walle服务端部署文档](docs/walle服务端部署文档.md)
+1. 部署服务端（EMQX + SRS + 门户）：见 [walle_deployment_require.md](docs/walle_deployment_require.md)
 2. 浏览器打开 `http://<host>:8088/`，用后端账号登录
 3. 设备侧按主题规范接入 MQTT，并向 `rtmp://<host>:1935/live/{stream}` 推流
 
@@ -39,10 +39,10 @@ walle 是一个面向树莓派小车的远程控制平台：通过 **MQTT** 下�
 
 | 文档 | 内容 |
 |---|---|
-| [walle服务端详细设计](docs/walle服务端详细设计.md) | 架构、登录认证、Nginx 反代、MQTT 主题、控制台功能与数据模型设计 |
-| [walle服务端部署文档](docs/walle服务端部署文档.md) | 裸机部署、配置、换机器必改项、验证步骤与运维注意事项 |
-| [BAREMETAL_部署报告](docs/BAREMETAL_部署报告.md) | 首次裸机部署的验证记录 |
-| [MVP_验证报告](docs/MVP_验证报告.md) | EMQX + SRS 联调 MVP 的验证记录 |
+| [walle_detiled_design.md](docs/walle_detiled_design.md) | 架构、登录认证、Nginx 反代、MQTT 主题、控制台功能与数据模型设计 |
+| [walle_deployment_require.md](docs/walle_deployment_require.md) | 裸机部署、配置、换机器必改项、验证步骤与运维注意事项 |
+| [deployment_report.md](docs/deployment_report.md) | 首次裸机部署的验证记录 |
+| [MVP_verification_report.md](docs/MVP_verification_report.md) | EMQX + SRS 联调 MVP 的验证记录 |
 
 ## 版本
 

@@ -1,35 +1,39 @@
 # 门户 Nginx 配置模板
 #
 # 使用方法：
-#   cp baremetal/nginx/nginx.conf.example baremetal/nginx/nginx.conf
+#   cp etc/nginx.conf.example etc/nginx.conf
 #   然后把下方 <BASE64(api_key:api_secret)> 替换为真实凭据：
-#     KEY=$(jq -r .api_key baremetal/emqx_api_key.json)
-#     SECRET=$(jq -r .api_secret baremetal/emqx_api_key.json)
+#     KEY=$(jq -r .api_key etc/emqx_api_key.json)
+#     SECRET=$(jq -r .api_secret etc/emqx_api_key.json)
 #     printf '%s:%s' "$KEY" "$SECRET" | base64 -w0
-# 真实的 nginx.conf 含密钥，已在 .gitignore 中排除，不要提交。
+#   真实的 etc/nginx.conf 含密钥，已在 .gitignore 中排除，不要提交。
+#
+# 路径说明：下面所有相对路径的起点是启动时的 prefix（仓库根目录），
+# 由 scripts/start-walle.sh 通过 -p 传入；因此整个仓库目录移动后无需修改本文件。
+# 运行期产物：日志写入 log/，pid 与临时文件放在 .run/nginx/。
 
 worker_processes 1;
-pid /home/gs/01_walle_service/baremetal/nginx/nginx.pid;
-error_log /home/gs/01_walle_service/baremetal/nginx/error.log warn;
+pid .run/nginx/nginx.pid;
+error_log log/error.log warn;
 
 events { worker_connections 1024; }
 
 http {
     include /etc/nginx/mime.types;
     default_type application/octet-stream;
-    access_log /home/gs/01_walle_service/baremetal/nginx/access.log;
+    access_log log/access.log;
 
-    client_body_temp_path /home/gs/01_walle_service/baremetal/nginx/temp/client_body;
-    proxy_temp_path       /home/gs/01_walle_service/baremetal/nginx/temp/proxy;
-    fastcgi_temp_path     /home/gs/01_walle_service/baremetal/nginx/temp/fastcgi;
-    uwsgi_temp_path       /home/gs/01_walle_service/baremetal/nginx/temp/uwsgi;
-    scgi_temp_path        /home/gs/01_walle_service/baremetal/nginx/temp/scgi;
+    client_body_temp_path .run/nginx/temp/client_body;
+    proxy_temp_path       .run/nginx/temp/proxy;
+    fastcgi_temp_path     .run/nginx/temp/fastcgi;
+    uwsgi_temp_path       .run/nginx/temp/uwsgi;
+    scgi_temp_path        .run/nginx/temp/scgi;
 
     server {
         listen 8088;
         server_name _;
 
-        root /home/gs/01_walle_service/baremetal/nginx/portal;
+        root src/web;
         index index.html;
 
         location / { try_files $uri $uri/ /index.html; }

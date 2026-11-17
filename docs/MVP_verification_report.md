@@ -196,7 +196,7 @@ libpocketsphinx3 libavfilter9 libavdevice60 ffmpeg
 ├── screenshots/                # 新建：两张页面截图
 ├── apt-ffmpeg.log              # 新建
 ├── pull-emqx.log / pull-mosquitto.log  # 新建
-└── MVP_验证报告.md             # 本报告
+└── MVP_verification_report.md  # 本报告
 ```
 
 系统级变更（均在已授权范围）：

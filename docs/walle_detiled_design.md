@@ -2,7 +2,7 @@
 
 > 适用版本：walle-ai v0.1（2026-11-16 原型）
 > 运行环境：Ubuntu 24.04 arm64 裸机，EMQX Enterprise 6.3.2 + SRS 7.0.215 + Nginx 门户
-> 本文只描述设计与实现细节；安装、配置、上线步骤见 [walle服务端部署文档](./walle服务端部署文档.md)。
+> 本文只描述设计与实现细节；安装、配置、上线步骤见 [walle_deployment_require.md](./walle_deployment_require.md)。
 
 ---
 
@@ -27,8 +27,8 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
                       │ http://<host>:8088
                       ▼
         ┌──────────────────────────────┐
-        │  Nginx 门户（手动启停，8088） │
-        │  /            → portal/*.html│
+        │  Nginx 门户（托管/手动，8088） │
+        │  /            → src/web/*.html│
         │  /auth/login  → EMQX 登录    │
         │  /emqx-api/   → EMQX +Basic  │
         │  /srs-api/    → SRS API      │
@@ -75,7 +75,7 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 
 ## 4. 前端页面与路由设计
 
-页面全部是静态 HTML，位于 `baremetal/nginx/portal/`，不使用构建工具与前端框架。
+页面全部是静态 HTML，位于 `src/web/`，不使用构建工具与前端框架。
 
 | 文件 | 路由 | 作用 | 登录态校验 |
 |---|---|---|---|
@@ -116,7 +116,7 @@ EMQX REST API
   └─ 401 → 前端提示“用户名或密码错误”
 ```
 
-对应实现：登录表单在 [index.html](../baremetal/nginx/portal/index.html#L99-L128)，反代在 [nginx.conf.example](../baremetal/nginx/nginx.conf.example#L37-L43)（本机实际生效的是由它复制出的 `nginx.conf`）。
+对应实现：登录表单在 [index.html](../src/web/index.html#L99-L128)，反代在 [nginx.conf.example](../etc/nginx.conf.example#L41-L47)（本机实际生效的是由它复制出的 `etc/nginx.conf`）。
 
 ### 5.2 设计约束
 
@@ -130,7 +130,7 @@ EMQX REST API
 
 ## 6. Nginx 反代设计
 
-配置模板见 [nginx.conf.example](../baremetal/nginx/nginx.conf.example)；本机运行的 `nginx.conf` 由模板复制并填入真实 API Key，不入版本库。
+配置模板见 [nginx.conf.example](../etc/nginx.conf.example)；本机运行的 `etc/nginx.conf` 由模板复制并填入真实 API Key，不入版本库。
 
 | location | 上游 | 关键处理 | 目的 |
 |---|---|---|---|
@@ -145,7 +145,7 @@ EMQX REST API
 
 - `/srs/` 必须关闭缓冲，否则 FLV 直播会被 Nginx 攒包导致延迟累积；超时放宽到 1 小时以容忍长时间观看。
 - `/emqx-api/` 前缀映射到 `/api/v5/`，前端只需 `fetch("/emqx-api/nodes")`，不感知版本号。
-- 门户刻意**不做 systemd**，由 `start-portal.sh` 手动 start/stop/status，以非特权端口 8088 运行，避免与系统 `/etc/nginx` 实例冲突。
+- 门户可由 `walle.service` 托管（`scripts/deploy.sh` 渲染并安装单元），也可用 `scripts/start-walle.sh` 手动 start/stop/status；以非特权端口 8088 运行，避免与系统 `/etc/nginx` 实例冲突。
 
 ---
 
@@ -163,9 +163,9 @@ EMQX REST API
 
 ### 7.2 API Key 机制
 
-- 通过 Dashboard 的 **Access Control → API Keys** 创建，得到 `api_key` / `api_secret`，落盘 `baremetal/emqx_api_key.json`（0600）。
+- 通过 Dashboard 的 **Access Control → API Keys** 创建，得到 `api_key` / `api_secret`，落盘 `etc/emqx_api_key.json`（0600）。
 - 使用时 `base64(api_key:api_secret)` 写入 Nginx 的 `Authorization` 头。
-- 轮换方式：新建 Key → 重算 base64 → 替换 nginx.conf → `start-portal.sh stop && start`。
+- 轮换方式：新建 Key → 重算 base64 → 替换 `etc/nginx.conf` → `scripts/stop-walle.sh` 后 `scripts/start-walle.sh start`。
 
 ### 7.3 License
 
@@ -200,7 +200,7 @@ EMQX REST API
 
 ### 8.3 测试用客户端
 
-`baremetal/mqtt_demo_client.py` 是零依赖 MQTT 客户端，用于验证连接与订阅（订阅 `demo/#`），不属于业务代码。
+`src/backend/mqtt_demo_client.py` 是零依赖 MQTT 客户端，用于验证连接与订阅（订阅 `demo/#`），不属于业务代码。
 
 ---
 

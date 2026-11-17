@@ -1,0 +1,23 @@
+# walle 门户 systemd 单元模板
+#
+# 由 scripts/deploy.sh 渲染为 scripts/walle.service，再安装到 /etc/systemd/system/
+# 占位符：__REPO_ROOT__（仓库绝对路径）、__USER__、__GROUP__（服务运行用户）
+
+[Unit]
+Description=walle portal (nginx, port 8088)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+User=__USER__
+Group=__GROUP__
+EnvironmentFile=/etc/walle/walle.conf
+ExecStart=__REPO_ROOT__/scripts/start-walle.sh start
+ExecStop=__REPO_ROOT__/scripts/start-walle.sh stop
+PIDFile=__REPO_ROOT__/.run/nginx/nginx.pid
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

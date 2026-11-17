@@ -54,7 +54,7 @@ Depends: libc6 (>= 2.39), libgcc-s1, libkrb5-3, libodbc2, libsasl2-2,
 ### 1.2 安装
 
 ```bash
-cd ~/01_walle_service/baremetal
+cd ~/01_walle_service/walle-service
 sudo apt install -y ./emqx-enterprise-6.3.2-ubuntu24.04-arm64.deb
 sudo systemctl start emqx       # 安装后服务为 inactive，需手动启动
 ```
@@ -115,7 +115,7 @@ GET /api/v5/metrics
 {"node":"emqx@127.0.0.1","fields":113}
 ```
 
-API Key：`baremetal-portal`（scopes 含 connections/publish/monitoring 等），保存在 `baremetal/emqx_api_key.json`（0600）。
+API Key：本次部署创建（scopes 含 connections/publish/monitoring 等），保存在 `etc/emqx_api_key.json`（0600）。
 
 ### 3.2 SRS
 
@@ -126,7 +126,7 @@ GET /api/v1/streams/ → 200
 GET /api/v1/clients/ → 200（fmle-publish + flv-play）
 
 GET /metrics → 200
-srs_build_info{... version="7.0.215", code="Kai", label="baremetal", tag="baremetal"} 1
+srs_build_info{... version="7.0.215", code="Kai"} 1
 
 GET /live/test.flv → 200，Content-Type: video/x-flv
 ```
@@ -147,8 +147,8 @@ GET /srs/live/test.flv        → 200 video/x-flv
 截图（已复制到 VM）：
 
 ```text
-baremetal/screenshots/srs_play_top.jpg   （EMQX/SRS 概览 + 播放画面）
-baremetal/screenshots/srs_play.jpg       （播放器区域）
+docs/screenshots/srs_play_top.jpg   （EMQX/SRS 概览 + 播放画面）
+docs/screenshots/srs_play.jpg       （播放器区域）
 ```
 
 ---
@@ -184,20 +184,20 @@ baremetal/screenshots/srs_play.jpg       （播放器区域）
 | cmake | 3.28.3-1build7 | Ubuntu 官方源 |
 | tcl | 8.6.14build1 | Ubuntu 官方源 |
 
-日志：`baremetal/apt-emqx-install.log`、`baremetal-apt-nginx.log`、`baremetal/apt-build-deps*.log`。
+日志：`apt-emqx-install.log`、`apt-build-deps*.log` 等（首次部署时的历史记录）。
 
 ---
 
 ## 6. SRS 编译与运行（裸机）
 
 ```text
-源码：~/01_walle_service/baremetal/srs（v7.0-a4）
+源码：~/01_walle_service/walle-service/thirdparty/srs（v7.0-a4）
 配置：cd trunk && ./configure --srt=on
 编译：make -j8（make.rc=0）
 产物：trunk/objs/srs = 30M；trunk/objs = 318M
 版本：7.0.215
-运行：ulimit -n 10000；nohup ./objs/srs -c ~/01_walle_service/baremetal/srs/srs.conf &
-PID：73637（日志 baremetal/srs.log）
+运行：ulimit -n 10000；nohup ./objs/srs -c ~/01_walle_service/walle-service/etc/srs.conf &
+PID：73637（日志 srs.log）
 ```
 
 `max_connections 800`，避免再次触发容器版遇到的 `ulimit 1024` 限制。
@@ -207,19 +207,20 @@ PID：73637（日志 baremetal/srs.log）
 ## 7. 文件/进程
 
 ```text
-~/01_walle_service/baremetal/
-├── emqx-enterprise-6.3.2-ubuntu24.04-arm64.deb   # 84M，sha256 已校验
-├── emqx_api_key.json                              # 0600
-├── srs/                                           # 源码 + objs
-├── srs/srs.conf
-├── nginx/nginx.conf                               # 独立实例，8088
-├── nginx/portal/index.html                        # 适配后的门户
-├── nginx/{nginx.pid,error.log,access.log,temp/}
-├── screenshots/{srs_play_top.jpg,srs_play.jpg}
+~/01_walle_service/walle-service/
+├── emqx-enterprise-6.3.2-ubuntu24.04-arm64.deb   # 84M，sha256 已校验（部署后已删除）
+├── etc/emqx_api_key.json                          # 0600
+├── thirdparty/srs/                                # 源码 + objs
+├── etc/srs.conf
+├── etc/nginx.conf                                 # 独立实例，8088
+├── src/web/index.html                             # 适配后的门户
+├── log/{error.log,access.log}                     # 门户日志
+├── .run/nginx/{nginx.pid,temp/}
+├── docs/screenshots/{srs_play_top.jpg,srs_play.jpg}
 ├── configure.log / make.log / make.rc
 ├── srs.log / srs.pid
 ├── apt-emqx-install.log
-└── BAREMETAL_部署报告.md
+└── docs/deployment_report.md
 ```
 
 进程：
@@ -228,7 +229,7 @@ PID：73637（日志 baremetal/srs.log）
 EMQX：systemd emqx.service（emqx@127.0.0.1）
 SRS：73637  ./objs/srs -c .../srs.conf
 ffmpeg：73747  推流 rtmp://127.0.0.1:1935/live/test
-门户 nginx：80260  nginx -p .../baremetal/nginx -c .../nginx.conf
+门户 nginx：80260  nginx -p ~/01_walle_service/walle-service -c ~/01_walle_service/walle-service/etc/nginx.conf
 系统 nginx：49881（80 默认站点）
 ```
 
@@ -263,7 +264,7 @@ ffmpeg：73747  推流 rtmp://127.0.0.1:1935/live/test
 ## 10. 收尾变更（2026-11-15 晚）
 
 - SRS 由 nohup 改为 `srs.service`（`User=gs`、`LimitNOFILE=10000`、`Restart=on-failure`），`enable --now` 成功；`systemctl restart srs` 后 `/api/v1/streams/` 仍 200。
-- 门户改为手动脚本 `baremetal/start-portal.sh`（start/stop/status），实测 stop→200 失败、start→200 成功；未做 systemd。
+- 门户改为手动脚本 `scripts/start-walle.sh`（start/stop/status），实测 stop→200 失败、start→200 成功；当时未做 systemd。
 - Docker 镜像全部删除：清理前 6 个镜像（10 个 tag，约 922.4MB），清理后 0 镜像、0 容器；保留 6 个本地卷（约 331KB）与 Docker 引擎。
-- 新增无依赖 MQTT 测试客户端 `baremetal/mqtt_demo_client.py`（替代已删除的 mosquitto 容器），保持 1 个客户端与 `demo/#` 订阅。
-- 新增 `~/01_walle_service/README.md`（541 行，14 章），面向新机器从零部署。
+- 新增无依赖 MQTT 测试客户端 `src/backend/mqtt_demo_client.py`（替代已删除的 mosquitto 容器），保持 1 个客户端与 `demo/#` 订阅。
+- 新增 `~/01_walle_service/walle-service/README.md`（541 行，14 章），面向新机器从零部署。

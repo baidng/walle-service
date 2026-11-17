@@ -9,6 +9,24 @@
 ｜｜
 
 
+
+# 目录结构
+```bash
+├── docs/             # 文档
+├── tests/            # 测试
+├── scripts/          # 构建、备份、发布脚本
+├── etc/              # 运行期配置：app.yaml、nginx.conf
+├── src/              # 源码
+│     ├── web/        # web端源码
+│     └── backend/    # 后端源码
+├── thirdparty/       # 第三方代码
+├── README.md
+└── LICENSE
+```
+
+
+
+
 # 代码要求
 
 
