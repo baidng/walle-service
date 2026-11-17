@@ -75,6 +75,8 @@
   .tag.ok { background: #14311f; color: var(--accent2); }
   .tag.warn { background: #3a3011; color: var(--warn); }
   .tag.bad { background: #3a1a1a; color: var(--bad); }
+  .svc-link { color: var(--accent2); text-decoration: none; margin-left: 8px; white-space: nowrap; }
+  .svc-link:hover { text-decoration: underline; }
 
   .placeholder { color: var(--muted); font-size: 13px; padding: 24px; text-align: center;
                  border: 1px dashed var(--line); border-radius: 8px; background: #12151b; }
@@ -142,11 +144,11 @@
       <table>
         <thead><tr><th>组件</th><th>端口</th><th>状态</th><th>说明</th></tr></thead>
         <tbody>
-          <tr><td>EMQX Dashboard</td><td>18083</td><td><span class="tag ok" id="st-emqx-dash">检查中</span></td><td>REST API / 管理界面</td></tr>
+          <tr><td>EMQX Dashboard</td><td>18083</td><td><span class="tag ok" id="st-emqx-dash">检查中</span></td><td>REST API / 管理界面<a class="svc-link" id="open-emqx-dash" target="_blank" rel="noopener">打开 ↗</a></td></tr>
           <tr><td>EMQX MQTT</td><td>1883</td><td><span class="tag ok" id="st-emqx-mqtt">检查中</span></td><td>MQTT over TCP</td></tr>
           <tr><td>SRS RTMP</td><td>1935</td><td><span class="tag ok" id="st-srs-rtmp">检查中</span></td><td>推流入口</td></tr>
-          <tr><td>SRS HTTP</td><td>8080</td><td><span class="tag ok" id="st-srs-http">检查中</span></td><td>FLV / HLS / console</td></tr>
-          <tr><td>SRS WebRTC</td><td>8000/udp</td><td><span class="tag warn" id="st-srs-rtc">检查中</span></td><td>WHEP / WHIP</td></tr>
+          <tr><td>SRS HTTP</td><td>8080</td><td><span class="tag ok" id="st-srs-http">检查中</span></td><td>FLV / HLS / console<a class="svc-link" href="/srs/console/" target="_blank" rel="noopener">打开 ↗</a></td></tr>
+          <tr><td>SRS WebRTC</td><td>8000/udp</td><td><span class="tag warn" id="st-srs-rtc">检查中</span></td><td>WHEP / WHIP<a class="svc-link" href="/srs/players/rtc_player.html" target="_blank" rel="noopener">播放器 ↗</a></td></tr>
         </tbody>
       </table>
     </div>
@@ -408,6 +410,10 @@ function restartEmqx() {
   if (!confirm("确认重启 EMQX？MQTT 客户端会断开重连。")) return;
   alert("已触发（演示环境：请在宿主机执行 sudo systemctl restart emqx）");
 }
+
+// EMQX Dashboard 未做反向代理，直接用当前主机的 18083 端口打开
+document.getElementById("open-emqx-dash").href =
+  location.protocol + "//" + location.hostname + ":18083/";
 
 loadEMQX(); loadSRS(); checkServices(); fillStatic();
 setInterval(() => { loadEMQX(); loadSRS(); }, 5000);
