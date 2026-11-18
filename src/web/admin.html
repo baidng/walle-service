@@ -111,8 +111,7 @@
       <div class="menu-children">
         <div class="menu-item" data-panel="mqtt-overview">概览</div>
         <div class="menu-item" data-panel="mqtt-users">用户管理</div>
-        <div class="menu-item" data-panel="mqtt-topics">主题配置</div>
-        <div class="menu-item" data-panel="mqtt-rules">规则引擎</div>
+        <div class="menu-item" data-panel="bindings">设备绑定</div>
       </div>
     </div>
 
@@ -201,25 +200,20 @@
     </div>
   </section>
 
-  <section class="panel" data-panel="mqtt-topics">
-    <h2>MQTT · 主题配置</h2>
-    <p class="lead">小车 topic 规范建议：<code>walle/{device_id}/{cmd|state|video|alarm}</code>。</p>
+  <section class="panel" data-panel="bindings">
+    <h2>MQTT · 设备绑定</h2>
+    <p class="lead">每台设备（角色「设备」）只能绑定一个客户（角色「客户」）。绑定后自动生成 EMQX ACL：设备只能读写绑定客户 <code>walle/{tenant}/{device}/#</code> 的主题，解除绑定时同步删除该 ACL。</p>
     <div class="card">
+      <div class="user-form">
+        <select id="bind-device"><option value="">选择设备</option></select>
+        <select id="bind-customer"><option value="">选择客户</option></select>
+        <button class="btn primary" id="bind-submit">绑定</button>
+      </div>
       <table>
-        <thead><tr><th>Topic 前缀</th><th>方向</th><th>用途</th><th>QoS</th></tr></thead>
-        <tbody>
-          <tr><td><code>walle/+/cmd</code></td><td>下行</td><td>下发控制指令（运动/录像/模式）</td><td>1</td></tr>
-          <tr><td><code>walle/+/state</code></td><td>上行</td><td>小车状态上报（位置/电量/传感器）</td><td>1</td></tr>
-          <tr><td><code>walle/+/alarm</code></td><td>上行</td><td>告警事件</td><td>1</td></tr>
-          <tr><td><code>walle/+/heartbeat</code></td><td>上行</td><td>心跳</td><td>0</td></tr>
-        </tbody>
+        <thead><tr><th>设备</th><th>绑定客户</th><th>可用主题</th><th>绑定时间</th><th>操作</th></tr></thead>
+        <tbody id="bindings-tbody"><tr><td colspan="5" style="color:var(--muted)">加载中…</td></tr></tbody>
       </table>
     </div>
-  </section>
-
-  <section class="panel" data-panel="mqtt-rules">
-    <h2>MQTT · 规则引擎</h2>
-    <div class="placeholder">规划中：将 <code>walle/+/alarm</code> 写入 MySQL / 触发 Webhook / 推送钉钉。</div>
   </section>
 
   <!-- SRS -->
@@ -325,6 +319,7 @@ function showPanel(name) {
   nav.querySelectorAll(".menu-item").forEach(i => i.classList.remove("active"));
   if (el) { el.classList.add("active"); crumb.textContent = el.textContent.trim(); }
   if (name === "mqtt-users") loadUsers();
+  if (name === "bindings") loadBindings();
 }
 nav.querySelectorAll(".menu-item").forEach(i => i.addEventListener("click", () => showPanel(i.dataset.panel)));
 nav.querySelectorAll(".menu-group-title").forEach(t => t.addEventListener("click", () => {
@@ -434,7 +429,8 @@ async function changePassword(username) {
 async function deleteUser(username) {
   if (!confirm(`确认删除用户 ${username}？该 MQTT 账号将立即失效。`)) return;
   try {
-    await apiJSON("/api/users/" + encodeURIComponent(username), { method: "DELETE" });
+    const r = await apiJSON("/api/users/" + encodeURIComponent(username), { method: "DELETE" });
+    if (r.message && r.message.includes("ACL")) alert(r.message);
     await loadUsers();
   } catch (e) {
     alert("删除失败：" + e.message);
@@ -447,6 +443,73 @@ document.getElementById("users-tbody").addEventListener("click", e => {
   if (!btn) return;
   if (btn.dataset.act === "pwd") changePassword(btn.dataset.user);
   if (btn.dataset.act === "del") deleteUser(btn.dataset.user);
+});
+
+// --- 设备绑定（一台设备只能绑一个客户；绑定即生成 EMQX ACL） ---
+async function loadBindings() {
+  const tb = document.getElementById("bindings-tbody");
+  tb.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">加载中…</td></tr>';
+  try {
+    const [users, data] = await Promise.all([apiJSON("/api/users"), apiJSON("/api/bindings")]);
+    const bindings = data.data || [];
+    const bound = new Set(bindings.map(b => b.device));
+    const devices = users.data.filter(u => u.role === "设备" && !bound.has(u.username));
+    const customers = users.data.filter(u => u.role === "客户");
+
+    const devSel = document.getElementById("bind-device");
+    const cusSel = document.getElementById("bind-customer");
+    devSel.innerHTML = '<option value="">选择设备</option>' +
+      devices.map(u => `<option value="${esc(u.username)}">${esc(u.username)}</option>`).join("");
+    cusSel.innerHTML = '<option value="">选择客户</option>' +
+      customers.map(u => `<option value="${esc(u.username)}">${esc(u.username)}</option>`).join("");
+
+    if (!bindings.length) {
+      tb.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">暂无绑定关系</td></tr>';
+      return;
+    }
+    tb.innerHTML = bindings.map(b => `<tr>
+      <td>${esc(b.device)}</td>
+      <td>${esc(b.customer)}</td>
+      <td><code>walle/${esc(b.customer)}/${esc(b.device)}/#</code></td>
+      <td>${esc(b.created_at || "-")}</td>
+      <td><div class="row-actions">
+        <button class="btn danger" data-act="unbind" data-device="${esc(b.device)}">解除绑定</button>
+      </div></td>
+    </tr>`).join("");
+  } catch (e) {
+    tb.innerHTML = `<tr><td colspan="5" style="color:var(--bad)">加载失败：${esc(e.message)}</td></tr>`;
+  }
+}
+
+async function createBinding() {
+  const device = document.getElementById("bind-device").value;
+  const customer = document.getElementById("bind-customer").value;
+  if (!device || !customer) { alert("请选择设备和客户"); return; }
+  try {
+    await apiJSON("/api/bindings", {
+      method: "POST",
+      body: JSON.stringify({ device, customer }),
+    });
+    await loadBindings();
+  } catch (e) {
+    alert("绑定失败：" + e.message);
+  }
+}
+
+async function deleteBinding(device) {
+  if (!confirm(`确认解除设备 ${device} 的绑定？对应 EMQX ACL 将同时删除。`)) return;
+  try {
+    await apiJSON("/api/bindings/" + encodeURIComponent(device), { method: "DELETE" });
+    await loadBindings();
+  } catch (e) {
+    alert("解除绑定失败：" + e.message);
+  }
+}
+
+document.getElementById("bind-submit").addEventListener("click", createBinding);
+document.getElementById("bindings-tbody").addEventListener("click", e => {
+  const btn = e.target.closest("button[data-act='unbind']");
+  if (btn) deleteBinding(btn.dataset.device);
 });
 
 async function loadEMQX() {

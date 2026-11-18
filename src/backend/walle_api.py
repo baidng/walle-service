@@ -36,6 +36,10 @@ EMQX_BASE = "http://127.0.0.1:18083/api/v5"
 AUTH_ID = "password_based:built_in_database"
 ROLES = ("客户", "设备")
 
+# 设备绑定生成的 ACL 规则写在 EMQX file 授权源的这一段标记之间，重新生成时整段替换。
+ACL_BEGIN = "%% ===== walle bindings (auto-generated, do not edit) ====="
+ACL_END = "%% ===== end walle bindings ====="
+
 # 管理员会话（内存保存，进程重启即失效）：token -> (用户名, 过期时间)
 SESSION_TTL = 12 * 3600
 SESSIONS = {}
@@ -87,6 +91,13 @@ def init_db():
             """CREATE TABLE IF NOT EXISTS users (
                    username   TEXT PRIMARY KEY,
                    role       TEXT NOT NULL CHECK (role IN ('客户', '设备')),
+                   created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+               )"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS bindings (
+                   device     TEXT PRIMARY KEY,
+                   customer   TEXT NOT NULL,
                    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
                )"""
         )
@@ -178,6 +189,92 @@ def emqx_user_path(username):
     return f"/authentication/{AUTH_ID}/users/{urllib.parse.quote(username, safe='')}"
 
 
+def acl_quote(value):
+    """转义 ACL 规则里的字符串字面量。"""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def valid_tenant(value):
+    """客户名会作为 MQTT 主题层级，不能包含分隔符、通配符或控制字符。"""
+    return (
+        bool(value)
+        and not any(ch in value for ch in "/+#\x00")
+        and all(ord(ch) >= 0x20 for ch in value)
+    )
+
+
+def binding_rows():
+    with db() as conn:
+        return conn.execute(
+            "SELECT device, customer, created_at FROM bindings ORDER BY customer, device"
+        ).fetchall()
+
+
+def managed_acl(bindings):
+    """生成 walle 管理的 ACL 段。
+
+    规则顺序即 EMQX file 授权源的匹配顺序（首次命中生效）：
+      1. 客户可读写自己租户的整棵子树；
+      2. 设备只读写「绑定客户 + 自己 clientid」的子树，并可订阅发现查询；
+      3. 其余账号（含未绑定设备）禁止访问 walle 命名空间。
+    """
+    lines = [ACL_BEGIN]
+    for row in bindings:
+        tenant = acl_quote(row["customer"])
+        lines.append(f'%% 客户 {row["customer"]}：读写本租户整棵子树')
+        lines.append(f'{{allow, {{username, "{tenant}"}}, all, ["walle/{row["customer"]}/#"]}}.')
+    for row in bindings:
+        device = acl_quote(row["device"])
+        tenant = row["customer"]
+        lines.append(f'%% 设备 {row["device"]}：只读写绑定客户 {tenant} 下自己的子树')
+        lines.append(
+            f'{{allow, {{username, "{device}"}}, publish, ["walle/{tenant}/${{clientid}}/#"]}}.'
+        )
+        lines.append(
+            f'{{allow, {{username, "{device}"}}, subscribe, '
+            f'["walle/{tenant}/${{clientid}}/#", "walle/{tenant}/v1/discovery/query"]}}.'
+        )
+    lines.append("%% 未绑定设备及其他账号禁止访问 walle 命名空间")
+    lines.append('{deny, all, all, ["walle/#"]}.')
+    lines.append(ACL_END)
+    return "\n".join(lines)
+
+
+def strip_managed_acl(rules):
+    out, skipping = [], False
+    for line in rules.splitlines():
+        stripped = line.strip()
+        if stripped == ACL_BEGIN:
+            skipping = True
+            continue
+        if stripped == ACL_END:
+            skipping = False
+            continue
+        if not skipping:
+            out.append(line)
+    return "\n".join(out).strip("\n")
+
+
+def sync_bindings_acl():
+    """按 bindings 表重新生成 EMQX file 授权源中的 walle ACL 段。"""
+    status, data = emqx("GET", "/authorization/sources/file")
+    if status != 200 or not isinstance(data, dict) or "rules" not in data:
+        raise RuntimeError(f"读取 EMQX ACL 失败: {data}")
+    base = strip_managed_acl(data["rules"])
+    rules = managed_acl(binding_rows())
+    if base:
+        rules += "\n\n" + base
+    status, data = emqx(
+        "PUT",
+        "/authorization/sources/file",
+        {"type": "file", "enable": True, "rules": rules},
+    )
+    if status not in (200, 204):
+        raise RuntimeError(f"写入 EMQX ACL 失败: {data}")
+    # 清掉授权缓存，让绑定/解绑立即生效（否则最长 1 分钟后才刷新）
+    emqx("DELETE", "/authorization/cache")
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "walle-api/0.1"
 
@@ -207,6 +304,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"status": "ok"})
         if self.path == "/api/users":
             return self.list_users()
+        if self.path == "/api/bindings":
+            return self.list_bindings()
         self._json(404, {"message": "not found"})
 
     def do_POST(self):
@@ -216,6 +315,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.login()
         if self.path == "/api/users":
             return self.create_user()
+        if self.path == "/api/bindings":
+            return self.create_binding()
         self._json(404, {"message": "not found"})
 
     def do_PUT(self):
@@ -226,6 +327,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         if self.path.startswith("/api/users/"):
             return self.delete_user(self._username())
+        if self.path.startswith("/api/bindings/"):
+            return self.delete_binding(self._username())
         self._json(404, {"message": "not found"})
 
     def _username(self):
@@ -354,16 +457,109 @@ class Handler(BaseHTTPRequestHandler):
     def delete_user(self, username):
         if not self._is_admin():
             return self._deny()
+        with db() as conn:
+            row = conn.execute("SELECT role FROM users WHERE username = ?", (username,)).fetchone()
+            if row is not None and row["role"] == "客户":
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM bindings WHERE customer = ?", (username,)
+                ).fetchone()[0]
+                if count:
+                    return self._json(
+                        409,
+                        {"message": f"客户 {username} 仍绑定 {count} 台设备，请先解除绑定"},
+                    )
+            binding = conn.execute(
+                "SELECT device, customer, created_at FROM bindings WHERE device = ?", (username,)
+            ).fetchone()
         status, data = emqx("DELETE", emqx_user_path(username))
         if status not in (200, 204):
             return self._json(status or 502, {"message": f"EMQX 删除用户失败: {data}"})
         with db() as conn:
             conn.execute("DELETE FROM users WHERE username = ?", (username,))
+            conn.execute("DELETE FROM bindings WHERE device = ?", (username,))
+        if binding is not None:
+            try:
+                sync_bindings_acl()
+            except RuntimeError as exc:
+                return self._json(
+                    200,
+                    {"username": username, "message": f"已删除，但 ACL 同步失败: {exc}"},
+                )
         return self._json(200, {"username": username, "message": "已删除"})
+
+    # ---------- 设备绑定 ----------
+    def list_bindings(self):
+        if not self._is_admin():
+            return self._deny()
+        return self._json(200, {"data": [dict(row) for row in binding_rows()]})
+
+    def create_binding(self):
+        if not self._is_admin():
+            return self._deny()
+        body = self._body()
+        if body is None:
+            return self._json(400, {"message": "请求体不是合法 JSON"})
+        device = (body.get("device") or "").strip()
+        customer = (body.get("customer") or "").strip()
+        if not device or not customer:
+            return self._json(400, {"message": "设备和客户都不能为空"})
+        if any(ord(ch) < 0x20 for ch in device):
+            return self._json(400, {"message": "设备名不能包含控制字符"})
+        if not valid_tenant(customer):
+            return self._json(400, {"message": "客户名不能包含 / + # 等 MQTT 特殊字符"})
+        with db() as conn:
+            dev = conn.execute("SELECT role FROM users WHERE username = ?", (device,)).fetchone()
+            cus = conn.execute("SELECT role FROM users WHERE username = ?", (customer,)).fetchone()
+            if dev is None or dev["role"] != "设备":
+                return self._json(400, {"message": f"{device} 不是角色为「设备」的用户"})
+            if cus is None or cus["role"] != "客户":
+                return self._json(400, {"message": f"{customer} 不是角色为「客户」的用户"})
+            exists = conn.execute(
+                "SELECT customer FROM bindings WHERE device = ?", (device,)
+            ).fetchone()
+            if exists is not None:
+                return self._json(
+                    409, {"message": f"设备 {device} 已绑定到 {exists['customer']}，请先解除绑定"}
+                )
+            conn.execute(
+                "INSERT INTO bindings (device, customer) VALUES (?, ?)", (device, customer)
+            )
+        try:
+            sync_bindings_acl()
+        except RuntimeError as exc:
+            with db() as conn:
+                conn.execute("DELETE FROM bindings WHERE device = ?", (device,))
+            return self._json(502, {"message": f"绑定失败，ACL 未写入: {exc}"})
+        return self._json(201, {"device": device, "customer": customer})
+
+    def delete_binding(self, device):
+        if not self._is_admin():
+            return self._deny()
+        with db() as conn:
+            row = conn.execute(
+                "SELECT device, customer, created_at FROM bindings WHERE device = ?", (device,)
+            ).fetchone()
+            if row is None:
+                return self._json(404, {"message": f"设备 {device} 没有绑定记录"})
+            conn.execute("DELETE FROM bindings WHERE device = ?", (device,))
+        try:
+            sync_bindings_acl()
+        except RuntimeError as exc:
+            with db() as conn:
+                conn.execute(
+                    "INSERT INTO bindings (device, customer, created_at) VALUES (?, ?, ?)",
+                    (row["device"], row["customer"], row["created_at"]),
+                )
+            return self._json(502, {"message": f"解除绑定失败，ACL 未更新: {exc}"})
+        return self._json(200, {"device": device, "message": "已解除绑定并删除 ACL"})
 
 
 def main():
     init_db()
+    try:
+        sync_bindings_acl()
+    except RuntimeError as exc:
+        print(f"warning: {exc}", file=sys.stderr, flush=True)
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"walle-api listening on http://{HOST}:{PORT} (db: {DB_PATH})", flush=True)
     try:
