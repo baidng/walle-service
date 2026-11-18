@@ -215,18 +215,6 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
 .emptyState{padding:26px 10px;text-align:center;font-size:12px;color:var(--dim)}
 .scrim{position:fixed;inset:0;z-index:40;background:rgba(3,5,8,.62);backdrop-filter:blur(3px);opacity:0;pointer-events:none;transition:opacity .2s}
 .scrim.show{opacity:1;pointer-events:auto}
-.drawer{position:fixed;top:0;right:0;bottom:0;z-index:41;width:min(430px,94vw);background:var(--bg2);
-  border-left:1px solid var(--line);box-shadow:-20px 0 60px rgba(0,0,0,.4);transform:translateX(102%);
-  transition:transform .24s cubic-bezier(.2,.8,.2,1);display:flex;flex-direction:column}
-.drawer.show{transform:none}
-.drawerHead{display:flex;align-items:center;justify-content:space-between;padding:18px 20px;border-bottom:1px solid var(--line)}
-.drawerHead h2{margin:0;font-size:14px;font-weight:650}
-.drawerBody{padding:18px 20px 26px;overflow:auto;display:flex;flex-direction:column;gap:15px}
-.field{display:flex;flex-direction:column;gap:6px}
-.field label{font-size:11.5px;color:var(--muted)}
-.field .hint{font-size:10.5px;line-height:1.55;color:var(--dim)}
-.drawerFoot{display:flex;gap:9px;padding:14px 20px;border-top:1px solid var(--line);background:rgba(255,255,255,.02)}
-.drawerFoot .btn{flex:1}
 @media(max-width:720px){
   .shell{padding:16px 14px 30px}
   .topbar{margin:0 -14px 16px;padding:12px 14px}
@@ -364,7 +352,6 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
       <select id="deviceSelect" class="deviceSelect"><option value="">未发现设备</option></select>
       <span id="connChip" class="chip bad"><i class="dot"></i><span id="connText">未连接</span></span>
       <button id="btnDiscover" class="btn" title="发送 discovery/query">刷新设备</button>
-      <button id="btnSettings" class="btn icon" title="连接设置">⚙</button>
       <span class="chip userChip"><span id="userName">—</span><span class="userBadge">普通用户</span></span>
       <button id="btnLogout" class="btn">退出</button>
     </div>
@@ -590,30 +577,6 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
   </div><!-- /layout -->
 </div>
 
-<div id="scrim" class="scrim"></div>
-<aside id="drawer" class="drawer">
-  <div class="drawerHead">
-    <h2>连接设置</h2>
-    <button id="btnDrawerClose" class="btn icon">✕</button>
-  </div>
-  <div class="drawerBody">
-    <div class="field">
-      <label>MQTT WebSocket 端口</label>
-      <input id="fPort" class="input mono" type="number" min="1" max="65535" spellcheck="false" placeholder="留空使用默认端口">
-      <div class="hint" id="wsUrlHint">—</div>
-      <div class="hint">地址自动使用当前服务器（<span id="wsHost">—</span>），协议随页面自动切换：HTTP 用 ws，HTTPS 用 wss；默认端口分别为 8083 / 8084。</div>
-    </div>
-    <div class="field">
-      <label>客户端 ID</label>
-      <input id="fClientId" class="input mono" spellcheck="false" readonly>
-      <div class="hint">每次打开页面随机生成，用于 MQTT 连接识别。</div>
-    </div>
-  </div>
-  <div class="drawerFoot">
-    <button id="btnSave" class="btn primary">保存并重连</button>
-  </div>
-</aside>
-
 <div id="playerScrim" class="scrim"></div>
 <div id="playerModal" class="playerModal">
   <div class="playerHead">
@@ -638,7 +601,6 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
   if (sessionStorage.getItem(ROLE_KEY) === 'admin') { location.replace('admin.html'); return; }
 
   var DEFAULTS = {
-    port: '',
     prefix: 'walle',
     device: '',
     videoRoom: ''
@@ -658,7 +620,7 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
   function saveCfg() {
     try {
       localStorage.setItem(LS_KEY, JSON.stringify({
-        port: cfg.port, prefix: cfg.prefix, device: cfg.device, videoRoom: cfg.videoRoom
+        prefix: cfg.prefix, device: cfg.device, videoRoom: cfg.videoRoom
       }));
     } catch (e) {}
   }
@@ -671,11 +633,9 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
   function topicRoot() { return cfg.prefix.replace(/\/+$/, '') + '/' + tenant() + '/v1'; }
   function rid() { return Math.random().toString(16).slice(2, 10); }
   function nowTime() { return new Date().toLocaleTimeString('zh-CN', { hour12: false }); }
-  function defaultWsPort() { return location.protocol === 'https:' ? '8084' : '8083'; }
   function wsUrlNow() {
     var proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    var port = String(cfg.port || '').trim() || defaultWsPort();
-    return proto + '://' + location.hostname + ':' + port + '/mqtt';
+    return proto + '://' + location.host + '/mqtt';
   }
   function videoUrlTemplate() {
     var proto = location.protocol === 'https:' ? 'https' : 'http';
@@ -683,13 +643,12 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
   }
 
   var el = {};
-  ['deviceSelect', 'connChip', 'connText', 'btnDiscover', 'btnSettings', 'onlineBadge', 'devName', 'devSub',
+  ['deviceSelect', 'connChip', 'connText', 'btnDiscover', 'onlineBadge', 'devName', 'devSub',
    'devPills', 'mCpu', 'bCpu', 'mTemp', 'bTemp', 'mMem', 'bMem', 'mUptime', 'bUp', 'dHost', 'dOs', 'dLoad', 'dNet',
    'dDisk', 'dUsb', 'dVideo', 'dRec', 'stateTime', 'autoState', 'btnState', 'btnCapability', 'videoEl',
    'videoEmpty', 'videoHint', 'btnVideoAction', 'btnVideoStop', 'btnVideoSound',
    'btnMic', 'voiceCard', 'micMeterFill',
    'videoMsg', 'alarmList', 'btnAlarmClear', 'carStatus', 'servoStatus', 'servoEnable',
-   'scrim', 'drawer', 'btnDrawerClose', 'fPort', 'fClientId', 'wsUrlHint', 'wsHost', 'btnSave',
    'userName', 'btnLogout',
    'recordBadge', 'recordActive', 'recFilename', 'recStartedAt', 'recDuration',
    'btnRecordStart', 'btnRecordStop', 'recordMsg', 'btnRecordList',
@@ -2417,34 +2376,6 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
       setVideoMsg('语音通话开启失败：' + (e && e.message ? e.message : e), 'err');
     }
   }
-  function fillSettings() {
-    el.fPort.value = cfg.port || '';
-    el.fClientId.value = CLIENT_ID;
-    el.wsHost.textContent = location.hostname;
-    el.wsUrlHint.textContent = '当前连接地址：' + wsUrlNow();
-  }
-  function openDrawer() { fillSettings(); el.drawer.classList.add('show'); el.scrim.classList.add('show'); }
-  function closeDrawer() { el.drawer.classList.remove('show'); el.scrim.classList.remove('show'); }
-  function saveSettings() {
-    var port = String(el.fPort.value || '').trim();
-    if (port && (!/^\d{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535)) {
-      setConn('bad', '端口必须是 1-65535 的数字');
-      return;
-    }
-    carReleaseAll(true);
-    servoDisable('连接参数已修改');
-    cfg.port = port;
-    stopMic(true);
-    saveCfg(); closeDrawer();
-    ui.devices = {}; ui.uuid = ''; ui.state = {}; ui.cap = {}; ui.video.room = ''; closeWhep(true);
-    setConn('bad', '正在重连…');
-    rebuildMqtt();
-  }
-
-  el.btnSettings.addEventListener('click', openDrawer);
-  el.btnDrawerClose.addEventListener('click', closeDrawer);
-  el.scrim.addEventListener('click', closeDrawer);
-  el.btnSave.addEventListener('click', saveSettings);
   el.userName.textContent = cfg.user || '用户';
   el.btnLogout.addEventListener('click', function () {
     sessionStorage.removeItem(TOKEN_KEY);

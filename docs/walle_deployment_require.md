@@ -458,6 +458,18 @@ http {
             proxy_read_timeout 30s;
         }
 
+        # 网页 MQTT over WebSocket：与门户同源，浏览器一律连 ws(s)://<当前主机>/mqtt，
+        # 不再写死 8083/8084。依赖 EMQX 的 ws 监听器（默认 8083，路径 /mqtt）保持开启。
+        location /mqtt {
+            proxy_pass http://127.0.0.1:8083;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host $host;
+            proxy_buffering off;
+            proxy_read_timeout 3600s;
+        }
+
         location /emqx-api/ {
             proxy_pass http://127.0.0.1:18083/api/v5/;
             proxy_http_version 1.1;
