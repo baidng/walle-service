@@ -27,3 +27,4 @@ etc/walle.conf
 
 # 用户角色数据库（本机数据）
 src/backend/data/
+src/backend/__pycache__/

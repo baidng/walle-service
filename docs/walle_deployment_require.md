@@ -15,8 +15,7 @@
   ▼
 Nginx（独立实例，由 walle.service 托管或手动启动）
   ├── /              → 静态门户 src/web/
-  ├── /api/          → 127.0.0.1:9000            （用户管理 API，SQLite + EMQX）
-  ├── /auth/login    → 127.0.0.1:18083/api/v5/login （用户凭据校验）
+  ├── /api/          → 127.0.0.1:9000            （登录与用户管理 API，SQLite + EMQX）
   ├── /emqx-api/     → 127.0.0.1:18083/api/v5/   （反代注入 API Key）
   ├── /srs-api/      → 127.0.0.1:1985/api/v1/
   ├── /srs/          → 127.0.0.1:8080/            （console/players/FLV/HLS）
@@ -141,7 +140,7 @@ rtc_server {
 | `scripts/start-walle.sh` | 路径由脚本位置推导 `REPO_ROOT` | 无需修改；仓库整体移动后仍可用 |
 | `src/backend/mqtt_demo_client.py` | `HOST = "127.0.0.1"` | 仅测试用；远程测试时改成 broker 地址 |
 
-> 门户页面已全部改为相对路径，`/auth/login` 也由同源反代提供，因此换 IP/域名时**无需修改任何 HTML**。
+> 门户页面已全部改为相对路径，`/api/` 也由同源反代提供，因此换 IP/域名时**无需修改任何 HTML**。
 
 ### 4.3 EMQX API Key（必须重新生成，不要沿用）
 
@@ -459,14 +458,6 @@ http {
             proxy_read_timeout 30s;
         }
 
-        location = /auth/login {
-            proxy_pass http://127.0.0.1:18083/api/v5/login;
-            proxy_http_version 1.1;
-            proxy_set_header Host $host;
-            proxy_set_header Content-Type application/json;
-            proxy_read_timeout 60s;
-        }
-
         location /emqx-api/ {
             proxy_pass http://127.0.0.1:18083/api/v5/;
             proxy_http_version 1.1;
@@ -507,7 +498,7 @@ printf '%s:%s' "$KEY" "$SECRET" | base64 -w0
 
 把结果替换 `<BASE64(api_key:api_secret)>`。
 
-> `/auth/login` 不能注入 API Key，否则 EMQX 会用管理凭据而不是用户提交的凭据做校验；也不要给它加认证 Bypass 之外的缓存。
+> 管理员登录已改由后端 `walle_api.py` 直接调用 EMQX `/api/v5/login` 校验，nginx 不再透传该路径。
 
 ### 8.2 启动脚本 `scripts/start-walle.sh`
 
@@ -616,7 +607,8 @@ sudo journalctl -u walle -n 50 --no-pager
 - **用户名**：创建后不可修改，同时作为 EMQX 内置数据库的 `user_id`。
 - **密码**：只保存在 EMQX（sha256 + suffix 加盐），walle 不存密码。
 - **角色**：`客户` / `设备` 二选一，保存在 `src/backend/data/users.db`（SQLite 单文件，自动创建）；两种角色在 EMQX 侧都不勾选「是否为超级用户」（`is_superuser=false`），权限由 ACL 控制。
-- **接口**：`GET/POST /api/users`、`PUT/DELETE /api/users/{用户名}`。
+- **接口**：`GET/POST /api/users`、`PUT/DELETE /api/users/{用户名}`；均要求请求头 `Authorization: Bearer <token>`。
+- **鉴权**：管理员在登录页选择「管理员」后调用 `POST /api/admin/login`（校验 EMQX Dashboard 账号）拿到 token，token 只保存在内存、有效期 12 小时，进程重启即失效；客户登录 `POST /api/login` 不签发管理权限。
 
 启停已合并进门户脚本：`start-walle.sh` 会同时拉起 nginx 与 API，`stop-walle.sh` 会同时停止两者；API 日志在 `log/walle-api.log`，pid 在 `.run/nginx/walle-api.pid`。
 
@@ -657,8 +649,8 @@ echo $! > mqtt_demo.pid
 | `/etc/systemd/system/walle.service`（由 `scripts/walle.service` 安装） | 门户服务 | `Type=forking`、`EnvironmentFile`、8088 |
 | `/etc/emqx/emqx.conf` | EMQX 配置（deb 自带） | 默认 dashboard 账号、监听端口 |
 | `etc/srs.conf` | SRS 运行配置 | `max_connections 800`、8080/1985/9972、`rtc_server` |
-| `etc/nginx.conf`（由模板复制） | 门户反代 | 8088、`/auth/login`、`/emqx-api/` 注入 Basic、`/srs/` 关闭缓冲 |
-| `src/web/index.html` | 登录页 | 角色 Tab、`POST /auth/login`、sessionStorage |
+| `etc/nginx.conf`（由模板复制） | 门户反代 | 8088、`/api/`、`/emqx-api/` 注入 Basic、`/srs/` 关闭缓冲 |
+| `src/web/index.html` | 登录页 | 角色 Tab、`POST /api/login` 或 `/api/admin/login`、sessionStorage |
 | `src/web/home.html` | 角色路由 | 按 `walle_role` 跳 admin/user |
 | `src/web/admin.html` | 管理员控制台 | 5s 轮询 EMQX/SRS 接口 |
 | `src/web/user.html` | 普通用户控制台 | HTTP-FLV 播放、指令占位 |
@@ -691,11 +683,11 @@ curl -s -o /dev/null -w 'exporter=%{http_code}\n' http://127.0.0.1:9972/metrics
 curl -s -o /dev/null -w 'portal=%{http_code}\n' http://127.0.0.1:8088/
 curl -s -o /dev/null -w 'flv=%{http_code} type=%{content_type}\n' --max-time 5 http://127.0.0.1:8088/srs/live/test.flv
 
-# 登录（正确密码 200，错误密码 401）
-curl -s -o /dev/null -w 'login=%{http_code}\n' -X POST http://127.0.0.1:8088/auth/login \
-  -H 'Content-Type: application/json' -d '{"username":"admin","password":"public"}'
-curl -s -o /dev/null -w 'bad-login=%{http_code}\n' -X POST http://127.0.0.1:8088/auth/login \
-  -H 'Content-Type: application/json' -d '{"username":"admin","password":"wrong"}'
+# 管理员登录（正确密码 200 并返回 token，错误密码 401）
+curl -s -o /dev/null -w 'admin-login=%{http_code}\n' -X POST http://127.0.0.1:8088/api/admin/login \
+  -H 'Content-Type: application/json' -d '{"username":"<Dashboard账号>","password":"<密码>"}'
+# 未带 token 访问用户接口应为 401
+curl -s -o /dev/null -w 'users=%{http_code}\n' http://127.0.0.1:8088/api/users
 ```
 
 期望（有推流与 MQTT 测试客户端时）：

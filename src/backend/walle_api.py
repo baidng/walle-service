@@ -13,10 +13,12 @@ import base64
 import contextlib
 import json
 import os
+import secrets
 import socket
 import sqlite3
 import struct
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -33,6 +35,27 @@ PORT = 9000
 EMQX_BASE = "http://127.0.0.1:18083/api/v5"
 AUTH_ID = "password_based:built_in_database"
 ROLES = ("客户", "设备")
+
+# 管理员会话（内存保存，进程重启即失效）：token -> (用户名, 过期时间)
+SESSION_TTL = 12 * 3600
+SESSIONS = {}
+
+
+def new_session(username):
+    token = secrets.token_urlsafe(32)
+    SESSIONS[token] = (username, time.time() + SESSION_TTL)
+    return token
+
+
+def session_user(token):
+    record = SESSIONS.get(token)
+    if not record:
+        return None
+    username, expires_at = record
+    if expires_at < time.time():
+        SESSIONS.pop(token, None)
+        return None
+    return username
 
 
 def load_credentials():
@@ -129,6 +152,21 @@ def mqtt_auth(username, password, host="127.0.0.1", port=1883, timeout=3):
     return len(resp) >= 4 and resp[0] == 0x20 and resp[3] == 0
 
 
+def emqx_login(username, password):
+    """用用户自己的账号密码校验 EMQX Dashboard 账号。"""
+    data = json.dumps({"username": username, "password": password}).encode()
+    req = urllib.request.Request(EMQX_BASE + "/login", data=data, method="POST")
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            raw = resp.read()
+            return resp.status, (json.loads(raw) if raw else None)
+    except urllib.error.HTTPError as exc:
+        return exc.code, None
+    except urllib.error.URLError as exc:
+        return 0, {"message": f"EMQX 不可达: {exc.reason}"}
+
+
 def emqx_users():
     status, data = emqx("GET", f"/authentication/{AUTH_ID}/users?limit=1000")
     if status != 200 or not isinstance(data, dict):
@@ -172,6 +210,8 @@ class Handler(BaseHTTPRequestHandler):
         self._json(404, {"message": "not found"})
 
     def do_POST(self):
+        if self.path == "/api/admin/login":
+            return self.admin_login()
         if self.path == "/api/login":
             return self.login()
         if self.path == "/api/users":
@@ -192,6 +232,32 @@ class Handler(BaseHTTPRequestHandler):
         return urllib.parse.unquote(self.path.rsplit("/", 1)[-1])
 
     # ---------- 业务 ----------
+    def _is_admin(self):
+        auth = self.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            return False
+        return session_user(auth[7:].strip()) is not None
+
+    def _deny(self):
+        return self._json(401, {"message": "未登录或会话已失效，请以管理员身份登录"})
+
+    def admin_login(self):
+        """管理员登录：校验 EMQX Dashboard 账号，成功后签发 walle 会话 token。"""
+        body = self._body() or {}
+        username = (body.get("username") or "").strip()
+        password = body.get("password") or ""
+        if not username or not password:
+            return self._json(400, {"message": "用户名和密码不能为空"})
+        status, data = emqx_login(username, password)
+        if status == 0:
+            return self._json(502, {"message": data.get("message", "EMQX 不可达")})
+        if status != 200:
+            return self._json(401, {"message": "管理员账号或密码错误"})
+        role = (data or {}).get("role")
+        if role and role != "administrator":
+            return self._json(403, {"message": "该 Dashboard 账号不是管理员，不能管理用户"})
+        return self._json(200, {"username": username, "token": new_session(username), "role": "administrator"})
+
     def login(self):
         """客户登录：密码交给 EMQX 校验，角色必须是「客户」。"""
         body = self._body() or {}
@@ -214,6 +280,8 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(200, {"username": username, "role": row["role"], "token": "ok"})
 
     def list_users(self):
+        if not self._is_admin():
+            return self._deny()
         try:
             remote = emqx_users()
         except RuntimeError as exc:
@@ -235,6 +303,8 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(200, {"data": users})
 
     def create_user(self):
+        if not self._is_admin():
+            return self._deny()
         body = self._body()
         if body is None:
             return self._json(400, {"message": "请求体不是合法 JSON"})
@@ -262,6 +332,8 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(201, {"username": username, "role": role})
 
     def update_user(self, username):
+        if not self._is_admin():
+            return self._deny()
         body = self._body() or {}
         password = body.get("password") or ""
         if not password:
@@ -280,6 +352,8 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(200, {"username": username, "message": "密码已更新"})
 
     def delete_user(self, username):
+        if not self._is_admin():
+            return self._deny()
         status, data = emqx("DELETE", emqx_user_path(username))
         if status not in (200, 204):
             return self._json(status or 502, {"message": f"EMQX 删除用户失败: {data}"})

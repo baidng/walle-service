@@ -29,7 +29,7 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
         ┌──────────────────────────────┐
         │  Nginx 门户（托管/手动，8088） │
         │  /            → src/web/*.html│
-        │  /auth/login  → EMQX 登录    │
+        │  /api/        → walle-api    │
         │  /emqx-api/   → EMQX +Basic  │
         │  /srs-api/    → SRS API      │
         │  /srs/        → SRS HTTP     │
@@ -50,7 +50,7 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 设计要点：
 
 1. **单一入口**：浏览器只访问 8088，不直连 18083/1985/8080。EMQX 6.x 不返回 CORS 头，直连会因预检失败而不可用，因此门户必须同源反代。
-2. **凭据分层**：登录请求 `/auth/login` 透传用户凭据，不注入 API Key；查询类接口 `/emqx-api/` 由 Nginx 注入只读 API Key，前端不持有管理凭据。
+2. **凭据分层**：管理员登录由 `walle_api.py` 调用 EMQX `/api/v5/login` 校验并签发内存 token；查询类接口 `/emqx-api/` 由 Nginx 注入只读 API Key，前端不持有管理凭据。
 3. **前后端同源**：所有页面用相对路径请求，换机器/IP 时前端代码无需改动。
 4. **无状态前端**：登录态仅存 `sessionStorage`，关闭标签页即失效，服务端无 session。
 
@@ -105,11 +105,13 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 
 ```text
 浏览器 index.html
-  ├─ 管理员 Tab → POST /auth/login  {username, password}
+  ├─ 管理员 Tab → POST /api/admin/login  {username, password}
   │     ▼
-  │   Nginx location = /auth/login → 18083/api/v5/login（EMQX Dashboard 账号）
-  │     ├─ 200 → { token } → home.html → admin.html
-  │     └─ 401 → 提示“用户名或密码错误”
+  │   walle_api.py
+  │     ├─ 调 EMQX /api/v5/login 校验 Dashboard 账号（非 administrator 拒绝）
+  │     ├─ 签发内存 token（12h，进程重启失效）→ home.html → admin.html
+  │     └─ 401 → 提示“管理员账号或密码错误”
+  │   admin.html 调 /api/users 时携带 Authorization: Bearer <token>
   │
   └─ 客户 Tab → POST /api/login  {username, password}
         ▼
@@ -123,11 +125,11 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 
 ### 5.2 设计约束
 
-1. **两套认证源**：管理员用 EMQX Dashboard 账号（`/auth/login`）；客户用 EMQX 内置数据库里的 MQTT 账号（`/api/login`），也就是「用户管理」页创建的用户名/密码。
+1. **两套认证源**：管理员用 EMQX Dashboard 账号（`/api/admin/login`）；客户用 EMQX 内置数据库里的 MQTT 账号（`/api/login`），也就是「用户管理」页创建的用户名/密码。
 2. **客户登录校验角色**：服务端查 SQLite，角色必须是「客户」，「设备」账号（小车）不能登录门户；管理员入口不做该校验。
 3. **token 不参与后续鉴权**：门户页面与查询接口均不使用该 token；真正的接口凭据是 Nginx 注入的 API Key。
 4. **失败处理**：密码错误 401；角色不符 403（提示来自后端）；EMQX 不可达 502；登录按钮在请求期间 `disabled`，防止重复提交。
-5. **已知缺陷**：`/auth/login`、`/api/login`、`/api/` 均未做限流与鉴权，存在暴力破解与越权风险（见第 9 节）。
+5. **已知缺陷**：`/api/login` 与 `/api/admin/login` 未做限流与失败计数，存在暴力破解风险（见第 9 节）；`/api/users` 已要求管理员 token。
 
 ---
 
@@ -138,8 +140,7 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 | location | 上游 | 关键处理 | 目的 |
 |---|---|---|---|
 | `/` | 本地 portal 目录 | `try_files $uri $uri/ /index.html` | 静态页面 + SPA 式回退 |
-| `= /auth/login` | `18083/api/v5/login` | 不注入 Authorization | 管理员凭据校验 |
-| `/api/` | `127.0.0.1:9000` | 反代到 walle_api.py | 客户登录与用户管理 |
+| `/api/` | `127.0.0.1:9000` | 反代到 walle_api.py | 登录与用户管理 |
 | `/emqx-api/` | `18083/api/v5/` | 注入 `Authorization: Basic <base64(api_key:api_secret)>` | 免前端持有管理凭据 |
 | `/srs-api/` | `1985/api/v1/` | `proxy_read_timeout 60s` | 媒体查询接口 |
 | `/srs/` | `8080/` | `proxy_buffering off`、`read_timeout 3600s` | 长连接拉流（FLV/HLS/console/players） |
@@ -318,7 +319,7 @@ recording (id, device_id, path, start_at, end_at, size, trigger)
 |---|---|---|
 | 管理 Key 暴露面 | `/emqx-api/` 对 8088 所有访问者开放，等同可读 EMQX 管理数据 | 引入 BFF 做会话鉴权；或限制 8088 来源 IP |
 | 角色可伪造 | `walle_role` 存于前端 | 角色判定下沉到 BFF，登录后签发服务端会话 |
-| 暴力破解 | `/auth/login` 无限流 | Nginx `limit_req` + 失败锁定 |
+| 暴力破解 | `/api/login`、`/api/admin/login` 无限流 | Nginx `limit_req` + 失败锁定 |
 | 默认凭据 | EMQX `admin/public`、默认 Erlang cookie | 部署时立即修改 |
 | 明文传输 | 8088 为 HTTP | 全链路 HTTPS |
 | 传输凭据 | 登录密码明文经 Nginx 转 EMQX（内网回环） | 保持回环；对外启用 TLS |
