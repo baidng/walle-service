@@ -2218,10 +2218,23 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
     return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.RTCPeerConnection);
   }
   // 从 WHEP 模板推导 WHIP 推流地址：/whep/ → /whip/，流名 {room}_audio
-  function whipAudioUrl(rm) {
+  function whipAudioUrl(rm, token) {
     var tmpl = videoUrlTemplate();
     if (!/^https?:\/\//i.test(tmpl)) return '';
-    return tmpl.replace('/whep/', '/whip/').replace(/\{room\}/g, encodeURIComponent(rm + '_audio'));
+    var url = tmpl.replace('/whep/', '/whip/').replace(/\{room\}/g, encodeURIComponent(rm + '_audio'));
+    if (token) url += '&token=' + encodeURIComponent(token);
+    return url;
+  }
+  // 短时效推流凭据：服务端用 MEDIA_SERVER_SECRET 签名，浏览器只拿签名结果
+  async function rtcToken(streamName) {
+    var res = await fetch('/api/rtc-token?stream=' + encodeURIComponent(streamName), {
+      headers: { 'Authorization': 'Bearer ' + (sessionStorage.getItem(TOKEN_KEY) || '') }
+    });
+    var data = {};
+    try { data = await res.json(); } catch (e) {}
+    if (!res.ok) throw new Error('HTTP ' + res.status + '：' + (data.message || '无响应体'));
+    if (!data.token) throw new Error('响应缺少 token');
+    return data.token;
   }
   function setMicUi(on, busy) {
     el.btnMic.classList.toggle('on', !!on);
@@ -2301,16 +2314,17 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
     if (!ui.uuid) { setVideoMsg('尚未取得设备 uuid', 'err'); return; }
     var rm = (ui.video.room || room()).trim();
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(rm)) { setVideoMsg('房间号不合法，无法开启语音通话', 'err'); return; }
-    var url = whipAudioUrl(rm);
-    if (!url) { setVideoMsg('WHEP 端点不合法，无法推导 WHIP 地址', 'err'); return; }
-    if (url.indexOf('/whip/') < 0) {
+    if (!whipAudioUrl(rm)) { setVideoMsg('WHEP 端点不合法，无法推导 WHIP 地址', 'err'); return; }
+    if (whipAudioUrl(rm).indexOf('/whip/') < 0) {
       setVideoMsg('WHEP 端点模板需包含 /whep/，无法推导 WHIP 地址', 'err');
       return;
     }
 
     ui.mic.starting = true; ui.mic.room = rm; setMicUi(false, true);
-    setVideoMsg('正在申请麦克风权限…', null);
+    setVideoMsg('正在获取推流凭据…', null);
     try {
+      var url = whipAudioUrl(rm, await rtcToken(rm + '_audio'));
+      setVideoMsg('正在申请麦克风权限…', null);
       var stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
         video: false

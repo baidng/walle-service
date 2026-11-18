@@ -11,6 +11,7 @@
 """
 import base64
 import contextlib
+import hashlib
 import hmac
 import json
 import os
@@ -133,6 +134,56 @@ def set_media_secret(value):
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (value,),
         )
+
+
+# 浏览器 WHIP 推流凭据：短时效 HMAC 签名，MEDIA_SERVER_SECRET 不出服务端
+RTC_TOKEN_TTL = 120
+STREAM_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _b64url(raw):
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
+def _b64url_decode(text):
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def rtc_signature(key, payload_b64):
+    return _b64url(hmac.new(key.encode(), payload_b64.encode(), hashlib.sha256).digest())
+
+
+def make_rtc_token(app, stream, ttl=RTC_TOKEN_TTL):
+    """签发只对 app/stream 有效、ttl 秒后过期的推流凭据；未配置密钥时返回空串。"""
+    key = get_media_secret()
+    if not key:
+        return ""
+    payload = json.dumps(
+        {"a": app, "s": stream, "e": int(time.time()) + ttl}, separators=(",", ":")
+    )
+    body = _b64url(payload.encode())
+    return f"{body}.{rtc_signature(key, body)}"
+
+
+def verify_rtc_token(token, app, stream):
+    """校验签名、有效期与 app/stream 绑定，全部通过才返回 True。"""
+    key = get_media_secret()
+    if not key or "." not in token:
+        return False
+    body, signature = token.rsplit(".", 1)
+    if not hmac.compare_digest(signature, rtc_signature(key, body)):
+        return False
+    try:
+        payload = json.loads(_b64url_decode(body))
+    except (ValueError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict) or payload.get("a") != app or payload.get("s") != stream:
+        return False
+    try:
+        expires_at = int(payload.get("e") or 0)
+    except (TypeError, ValueError):
+        return False
+    return expires_at >= time.time()
 
 
 def https_state():
@@ -400,6 +451,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/api/health":
             return self._json(200, {"status": "ok"})
+        if self.path.startswith("/api/rtc-token"):
+            return self.rtc_token()
         if self.path == "/api/users":
             return self.list_users()
         if self.path == "/api/bindings":
@@ -458,16 +511,45 @@ class Handler(BaseHTTPRequestHandler):
         if str(body.get("action") or "") != "on_publish":
             return self._json(200, 0)
         params = urllib.parse.parse_qs(str(body.get("param") or "").lstrip("?"))
-        supplied = (params.get("secret") or [""])[0]
+        app = str(body.get("app") or "")
+        stream = str(body.get("stream") or "")
         current = get_media_secret()
         if not current:
             self.log_message("SRS 拒绝推流：服务端未配置 MEDIA_SERVER_SECRET")
             return self._json(403, {"code": 403, "message": "secret not configured"})
-        if not hmac.compare_digest(supplied.encode(), current.encode()):
-            self.log_message("SRS 拒绝推流：app=%s stream=%s ip=%s",
-                             body.get("app"), body.get("stream"), body.get("ip"))
-            return self._json(403, {"code": 403, "message": "invalid secret"})
-        return self._json(200, 0)
+        # 设备/App 用静态密钥；浏览器 WHIP 用短时效 token，任一通过即放行
+        supplied = (params.get("secret") or [""])[0]
+        if supplied and hmac.compare_digest(supplied.encode(), current.encode()):
+            return self._json(200, 0)
+        token = (params.get("token") or [""])[0]
+        if token and verify_rtc_token(token, app, stream):
+            return self._json(200, 0)
+        self.log_message("SRS 拒绝推流：app=%s stream=%s ip=%s token=%s",
+                         app, stream, body.get("ip"), "yes" if token else "no")
+        return self._json(403, {"code": 403, "message": "invalid credential"})
+
+    # ---------- 流鉴权凭据 ----------
+    def rtc_token(self):
+        """给已登录用户签发短时效 WHIP 推流凭据（不含 MEDIA_SERVER_SECRET）。"""
+        auth = self.headers.get("Authorization", "")
+        if not auth.startswith("Bearer ") or session_user(auth[7:].strip()) is None:
+            return self._json(401, {"message": "未登录或会话已失效，请重新登录"})
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        app = (query.get("app") or ["live"])[0].strip() or "live"
+        stream = (query.get("stream") or [""])[0].strip()
+        if not STREAM_RE.match(app):
+            return self._json(400, {"message": "app 参数不合法"})
+        if not STREAM_RE.match(stream):
+            return self._json(400, {"message": "stream 参数不合法"})
+        token = make_rtc_token(app, stream)
+        if not token:
+            return self._json(503, {"message": "服务端未配置 MEDIA_SERVER_SECRET，无法签发推流凭据"})
+        return self._json(200, {
+            "token": token,
+            "expires_in": RTC_TOKEN_TTL,
+            "app": app,
+            "stream": stream,
+        })
 
     # ---------- 流鉴权密钥 ----------
     def get_stream_secret(self):
@@ -600,7 +682,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(403, {"message": "该账号未在 walle 登记角色，不能登录"})
         if row["role"] != "客户":
             return self._json(403, {"message": "该账号角色为「设备」，不能登录"})
-        return self._json(200, {"username": username, "role": row["role"], "token": "ok"})
+        return self._json(200, {"username": username, "role": row["role"], "token": new_session(username)})
 
     def list_users(self):
         if not self._is_admin():
