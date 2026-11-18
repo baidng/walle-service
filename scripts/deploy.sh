@@ -31,6 +31,18 @@ for key in EMQX_API_KEY EMQX_API_SECRET; do
 done
 info "    walle.conf 校验通过"
 
+# ---------- 1b. 检查 nginx.conf ----------
+NGINX_CONF="$REPO_ROOT/etc/nginx.conf"
+info "    检查 nginx.conf $NGINX_CONF"
+[ -f "$NGINX_CONF" ] || fail "找不到 etc/nginx.conf，请先执行：cp etc/nginx.conf.example etc/nginx.conf 并替换 <BASE64(api_key:api_secret)>"
+[ -s "$NGINX_CONF" ] || fail "etc/nginx.conf 是空文件"
+if grep -q '<BASE64(api_key:api_secret)>' "$NGINX_CONF"; then
+  fail "etc/nginx.conf 仍含占位符 <BASE64(api_key:api_secret)>，请用 6.3 节生成的真实 Basic 值替换"
+fi
+auth_line="$(grep -nE 'proxy_set_header\s+Authorization\s+"Basic ' "$NGINX_CONF" || true)"
+[ -n "$auth_line" ] || fail "etc/nginx.conf 未找到 proxy_set_header Authorization \"Basic ...\" 行，请检查 /emqx-api/ location 配置"
+info "    nginx.conf 校验通过"
+
 # ---------- 2. 生成 scripts/walle.service ----------
 info "2/3 渲染服务单元 $SERVICE_SRC"
 [ -f "$SERVICE_TPL" ] || fail "找不到模板 scripts/walle.service.example"
