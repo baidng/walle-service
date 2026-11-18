@@ -638,8 +638,9 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
     return proto + '://' + location.host + '/mqtt';
   }
   function videoUrlTemplate() {
+    // 同源代理到 SRS HTTP API，HTTPS 页面下不会产生混合内容
     var proto = location.protocol === 'https:' ? 'https' : 'http';
-    return proto + '://' + location.hostname + ':1985/rtc/v1/whep/?app=live&stream={room}';
+    return proto + '://' + location.host + '/rtc/v1/whep/?app=live&stream={room}';
   }
 
   var el = {};

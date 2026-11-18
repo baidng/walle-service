@@ -304,6 +304,23 @@
     </div>
     <div style="height:14px"></div>
     <div class="card">
+      <h3>一键 HTTPS（WebRTC）</h3>
+      <p class="sub" style="margin:0 0 12px; line-height:1.6">
+        填写已解析到本机的域名，自动向 Let's Encrypt 申请证书并配置 nginx 443 反代。<br />
+        前提：域名 A 记录指向本机公网 IP；放行 TCP 80/443 与 UDP 8000（WebRTC 媒体）；
+        服务器已安装 certbot；运行门户的用户已配置免密 sudo。
+      </p>
+      <div class="user-form">
+        <input id="https-domain" placeholder="live.example.com" autocomplete="off" style="width:260px" />
+        <input id="https-email" placeholder="邮箱（可选，用于到期通知）" autocomplete="off" style="width:260px" />
+        <button class="btn primary" id="https-apply">申请证书</button>
+        <button class="btn" id="https-renew">续期</button>
+      </div>
+      <p class="sub" id="https-status" style="margin-top:10px">加载中…</p>
+      <p class="sub" id="https-hint" style="display:none; color:var(--warn); white-space:pre-wrap; margin-top:8px"></p>
+    </div>
+    <div style="height:14px"></div>
+    <div class="card">
       <h3>维护动作</h3>
       <div style="display:flex; gap:10px; flex-wrap:wrap">
         <button onclick="restartSrs()" class="logout" style="color:var(--accent); border-color:#2a3a55">重启 SRS</button>
@@ -356,6 +373,7 @@ function showPanel(name) {
   if (name === "mqtt-users") loadUsers();
   if (name === "bindings") loadBindings();
   if (name === "srs-auth") loadStreamSecret();
+  if (name === "system") loadHttpsStatus();
 }
 nav.querySelectorAll(".menu-item").forEach(i => i.addEventListener("click", () => showPanel(i.dataset.panel)));
 nav.querySelectorAll(".menu-group-title").forEach(t => t.addEventListener("click", () => {
@@ -391,7 +409,11 @@ async function apiJSON(url, opts = {}) {
     throw new Error("登录已失效，请重新登录");
   }
   const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.message || (url + " -> " + r.status));
+  if (!r.ok) {
+    const err = new Error(data.message || (url + " -> " + r.status));
+    err.payload = data;
+    throw err;
+  }
   return data;
 }
 
@@ -634,7 +656,7 @@ async function fillStatic() {
     set("srs-ver", ver);
   } catch (e) {}
   set("tz", Intl.DateTimeFormat().resolvedOptions().timeZone);
-  set("rtc-candidate", "192.168.31.114 (见 srs.conf)");
+  set("rtc-candidate", "自动探测（candidate *）");
 }
 
 // --- SRS 流鉴权密钥 ---
@@ -697,6 +719,78 @@ document.getElementById("btn-secret-copy").addEventListener("click", copySecret)
 document.getElementById("btn-secret-gen").addEventListener("click", regenerateStreamSecret);
 document.getElementById("btn-secret-save").addEventListener("click", saveStreamSecret);
 
+// --- 一键 HTTPS ---
+function setHttps(msg, ok) {
+  const el = document.getElementById("https-status");
+  el.textContent = msg;
+  el.style.color = ok === true ? "var(--accent2)" : (ok === false ? "var(--bad)" : "var(--muted)");
+}
+function showHttpsHint(text) {
+  const el = document.getElementById("https-hint");
+  el.style.display = text ? "block" : "none";
+  el.textContent = text || "";
+}
+async function loadHttpsStatus() {
+  try {
+    const d = await apiJSON("/api/admin/https");
+    const domainEl = document.getElementById("https-domain");
+    const emailEl = document.getElementById("https-email");
+    if (d.enabled) {
+      const left = d.days_left == null ? "" : `，剩余 ${d.days_left} 天`;
+      const el = document.getElementById("https-status");
+      el.innerHTML = `已启用：<a class="svc-link" style="margin-left:0" href="${esc(d.https_url)}" target="_blank" rel="noopener">${esc(d.https_url)}</a>（到期 ${esc(d.not_after || "-")}${esc(left)}）`;
+      el.style.color = "var(--accent2)";
+      showHttpsHint("");
+    } else {
+      setHttps("未启用。填写域名后点击「申请证书」。", null);
+    }
+    if (!domainEl.value && d.domain) domainEl.value = d.domain;
+    if (!emailEl.value && d.email) emailEl.value = d.email;
+  } catch (e) {
+    setHttps("状态读取失败：" + e.message, false);
+  }
+}
+async function applyHttps() {
+  const domain = document.getElementById("https-domain").value.trim();
+  const email = document.getElementById("https-email").value.trim();
+  if (!domain) { alert("请填写域名，例如 live.example.com"); return; }
+  if (!confirm(`确认给 ${domain} 申请 HTTPS 证书？\n将调用 certbot 并修改系统 nginx 配置。`)) return;
+  const btn = document.getElementById("https-apply");
+  btn.disabled = true; btn.textContent = "申请中…";
+  setHttps("正在申请证书，通常需要 10-60 秒…", null);
+  showHttpsHint("");
+  try {
+    const d = await apiJSON("/api/admin/https/apply", {
+      method: "POST",
+      body: JSON.stringify({ domain, email }),
+    });
+    setHttps(d.message || "已启用 HTTPS", true);
+    await loadHttpsStatus();
+  } catch (e) {
+    setHttps("申请失败：" + e.message, false);
+    showHttpsHint((e.payload && e.payload.hint) || "请检查域名解析、80/443 端口、certbot 安装与 sudo 权限。");
+  } finally {
+    btn.disabled = false; btn.textContent = "申请证书";
+  }
+}
+async function renewHttps() {
+  if (!confirm("确认立即续期 HTTPS 证书？")) return;
+  const btn = document.getElementById("https-renew");
+  btn.disabled = true; btn.textContent = "续期中…";
+  try {
+    const d = await apiJSON("/api/admin/https/renew", { method: "POST" });
+    setHttps(d.message || "证书已续期", true);
+    await loadHttpsStatus();
+  } catch (e) {
+    setHttps("续期失败：" + e.message, false);
+    showHttpsHint((e.payload && e.payload.hint) || "");
+  } finally {
+    btn.disabled = false; btn.textContent = "续期";
+  }
+}
+document.getElementById("https-apply").addEventListener("click", applyHttps);
+document.getElementById("https-renew").addEventListener("click", renewHttps);
+
 // 重启按钮（sudo systemctl，需用户确认；在真实部署中建议通过后端 BFF 执行而不是直接调用）
 function restartSrs() {
   if (!confirm("确认重启 SRS？当前推流会中断。")) return;
@@ -711,7 +805,7 @@ function restartEmqx() {
 document.getElementById("open-emqx-dash").href =
   location.protocol + "//" + location.hostname + ":18083/";
 
-loadEMQX(); loadSRS(); checkServices(); fillStatic(); loadUsers();
+loadEMQX(); loadSRS(); checkServices(); fillStatic(); loadUsers(); loadHttpsStatus();
 setInterval(() => { loadEMQX(); loadSRS(); }, 5000);
 </script>
 

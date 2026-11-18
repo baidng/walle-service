@@ -14,10 +14,12 @@ import contextlib
 import hmac
 import json
 import os
+import re
 import secrets
 import socket
 import sqlite3
 import struct
+import subprocess
 import sys
 import time
 import urllib.error
@@ -30,6 +32,21 @@ REPO_ROOT = os.path.dirname(os.path.dirname(BASE_DIR))  # src/backend -> src -> 
 DATA_DIR = os.path.join(BASE_DIR, "data")
 DB_PATH = os.path.join(DATA_DIR, "users.db")
 CONF_PATH = os.path.join(REPO_ROOT, "etc", "walle.conf")
+
+# 一键 HTTPS：特权脚本（sudo 调用）与它写入的证书状态文件
+HTTPS_HELPER = os.path.join(REPO_ROOT, "scripts", "walle_https.sh")
+HTTPS_STATE_FILE = "/var/lib/walle/https.json"
+HTTPS_SITE_ENABLED = "/etc/nginx/sites-enabled/walle-https.conf"
+HTTPS_SUDO_HINT = (
+    "需要在服务器上为运行门户的用户配置免密 sudo（把 gs 换成实际运行用户）：\n"
+    f"echo 'gs ALL=(root) NOPASSWD: {HTTPS_HELPER}' | sudo tee /etc/sudoers.d/walle-https\n"
+    "sudo chmod 440 /etc/sudoers.d/walle-https\n"
+    "并确认已安装 certbot：sudo apt-get install -y certbot"
+)
+DOMAIN_RE = re.compile(
+    r"^(?=.{1,253}$)([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$"
+)
+EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}$")
 
 HOST = "127.0.0.1"
 PORT = 9000
@@ -116,6 +133,42 @@ def set_media_secret(value):
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (value,),
         )
+
+
+def https_state():
+    """读取一键 HTTPS 写入的证书状态；文件不存在或无权限时返回空。"""
+    try:
+        with open(HTTPS_STATE_FILE, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def run_https_helper(args, timeout):
+    """调用特权脚本（sudo -n），返回脚本最后一行 JSON。"""
+    try:
+        proc = subprocess.run(
+            ["sudo", "-n", HTTPS_HELPER, *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except FileNotFoundError:
+        return {"ok": False, "error": "未找到 sudo，无法执行 HTTPS 配置脚本"}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": f"操作超时（{timeout} 秒），请在服务器查看 certbot 日志"}
+    for line in reversed((proc.stdout or "").splitlines()):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                return payload
+    detail = (proc.stderr or "").strip() or (proc.stdout or "").strip()
+    return {"ok": False, "error": detail[-600:] or f"脚本退出码 {proc.returncode}"}
 
 
 def init_db():
@@ -353,6 +406,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.list_bindings()
         if self.path == "/api/admin/stream-secret":
             return self.get_stream_secret()
+        if self.path == "/api/admin/https":
+            return self.https_status()
         self._json(404, {"message": "not found"})
 
     def do_POST(self):
@@ -360,6 +415,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.srs_hook()
         if self.path == "/api/admin/stream-secret/regenerate":
             return self.regenerate_stream_secret()
+        if self.path == "/api/admin/https/apply":
+            return self.https_apply()
+        if self.path == "/api/admin/https/renew":
+            return self.https_renew()
         if self.path == "/api/admin/login":
             return self.admin_login()
         if self.path == "/api/login":
@@ -436,6 +495,65 @@ class Handler(BaseHTTPRequestHandler):
         value = secrets.token_hex(16)
         set_media_secret(value)
         return self._json(200, {"secret": value})
+
+    # ---------- 一键 HTTPS ----------
+    def https_status(self):
+        if not self._is_admin():
+            return self._deny()
+        state = https_state()
+        domain = str(state.get("domain") or "")
+        epoch = state.get("not_after_epoch")
+        days_left = None
+        if isinstance(epoch, (int, float)):
+            days_left = max(0, int((epoch - time.time()) // 86400))
+        return self._json(200, {
+            "enabled": bool(domain) and os.path.exists(HTTPS_SITE_ENABLED),
+            "domain": domain,
+            "email": state.get("email") or "",
+            "not_after": state.get("not_after") or "",
+            "days_left": days_left,
+            "applied_at": state.get("applied_at") or "",
+            "https_url": f"https://{domain}/" if domain else "",
+            "helper": HTTPS_HELPER,
+        })
+
+    def https_apply(self):
+        """申请并启用 HTTPS：调用特权脚本申请证书、写 nginx 配置并重载。"""
+        if not self._is_admin():
+            return self._deny()
+        body = self._body()
+        if not isinstance(body, dict):
+            return self._json(400, {"message": "请求体格式错误"})
+        domain = str(body.get("domain") or "").strip().lower().rstrip(".")
+        email = str(body.get("email") or "").strip()
+        if not DOMAIN_RE.match(domain):
+            return self._json(400, {"message": "域名格式不正确，例如 live.example.com"})
+        if email and not EMAIL_RE.match(email):
+            return self._json(400, {"message": "邮箱格式不正确"})
+        result = run_https_helper(["apply", domain, email], timeout=300)
+        if not result.get("ok"):
+            return self._json(502, {
+                "message": result.get("error") or "申请证书失败",
+                "hint": HTTPS_SUDO_HINT,
+            })
+        return self._json(200, {"message": f"{domain} 已启用 HTTPS", "state": result})
+
+    def https_renew(self):
+        if not self._is_admin():
+            return self._deny()
+        state = https_state()
+        domain = str(state.get("domain") or "")
+        if not domain:
+            return self._json(400, {"message": "尚未启用 HTTPS，请先申请证书"})
+        result = run_https_helper(
+            ["renew", domain, str(state.get("email") or "")], timeout=180
+        )
+        if not result.get("ok"):
+            return self._json(502, {
+                "message": result.get("error") or "续期失败",
+                "hint": HTTPS_SUDO_HINT,
+            })
+        return self._json(200, {"message": "证书已续期", "state": result})
 
     def _is_admin(self):
         auth = self.headers.get("Authorization", "")

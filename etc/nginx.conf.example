@@ -83,6 +83,16 @@ http {
             proxy_read_timeout 3600s;
         }
 
+        # WebRTC 信令（WHIP/WHEP）同源代理到 SRS HTTP API，
+        # 页面走 HTTPS 时不会产生混合内容，也不必对外暴露 1985。
+        location /rtc/ {
+            proxy_pass http://127.0.0.1:1985/rtc/;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_buffering off;
+            proxy_read_timeout 3600s;
+        }
+
         location = /metrics {
             proxy_pass http://127.0.0.1:9972/metrics;
         }
