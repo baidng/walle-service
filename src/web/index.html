@@ -76,6 +76,7 @@
 const ROLE_KEY = "walle_role";
 const TOKEN_KEY = "walle_token";
 const USER_KEY = "walle_user";
+const PASS_KEY = "walle_pass";
 
 // already logged in → go to home (role router)
 if (sessionStorage.getItem(TOKEN_KEY)) location.replace("home.html");
@@ -115,6 +116,8 @@ form.addEventListener("submit", async (e) => {
       sessionStorage.setItem(TOKEN_KEY, data.token || "ok");
       sessionStorage.setItem(USER_KEY, username);
       sessionStorage.setItem(ROLE_KEY, role);
+      if (role === "user") sessionStorage.setItem(PASS_KEY, password);
+      else sessionStorage.removeItem(PASS_KEY);
       location.replace("home.html");
       return;
     }
