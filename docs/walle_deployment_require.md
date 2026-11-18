@@ -55,7 +55,7 @@ Nginx（独立实例，由 walle.service 托管或手动启动）
 ## 3. 目录规划
 
 ```text
-/home/gs/01_walle_service/walle-service/
+<仓库根目录>/walle-service/
 ├── docs/                              # 文档，部署不需要
 │   ├── walle_deployment_require.md    # 本文（部署文档）
 │   ├── walle_detiled_design.md        # 架构、登录、MQTT、控制台设计
@@ -103,104 +103,6 @@ Nginx（独立实例，由 walle.service 托管或手动启动）
 
 ---
 
-## 4. 上云必改项（换机器先看）
-
-> 本节的值来自当前环境（`192.168.31.114`、用户 `gs`、路径 `/home/gs/...`）。直接复制到云主机前必须逐项核对；不改会影响 WebRTC 播放或直接导致启动失败。
-
-### 4.1 SRS WebRTC 候选地址（必改）
-
-`etc/srs.conf` 当前值：
-
-```hocon
-rtc_server {
-  enabled on;
-  listen 8000;
-  candidate 192.168.31.114;
-  tcp {
-    enabled on;
-    listen 8000;
-  }
-}
-```
-
-- **必须改**：`candidate` 改为云主机的公网 IP / EIP（NAT 环境填公网地址，不要填内网地址）。
-- **不改的后果**：SDP answer 中携带的是 `192.168.31.114`，公网浏览器 ICE 无法连通，WebRTC（WHEP/WHIP、`/players/rtc_player.html`）会黑屏或超时；HTTP-FLV、HLS、RTMP 推流不受影响。
-- **端口**：`listen 8000` 保持不变；安全组/防火墙需放行 **UDP 8000**。当前配置还启用了 `rtc_server.tcp`，因此 **TCP 8000** 也要放行；若只保留 UDP，可把 `tcp { enabled on; }` 改为 `off`。
-- **多网卡/多出口**：SRS 支持配置多条 `candidate`，至少保留一条公网地址。
-
-### 4.2 其他写死值（逐条核对）
-
-| 文件 | 当前实际值 | 换机器时怎么改 |
-|---|---|---|
-| `etc/srs.conf` | `candidate 192.168.31.114;`（第 30 行） | 改为公网 IP/EIP |
-| `etc/srs.conf` | `exporter { label ...; tag ...; }` 当前为部署环境标识 | 非必须；多环境时改成可区分名字 |
-| `/etc/systemd/system/srs.service`（源文件 `etc/srs.service`） | `User=gs`、`WorkingDirectory=/home/gs/01_walle_service/walle-service/thirdparty/srs/trunk`、`ExecStart=.../thirdparty/srs/trunk/objs/srs -c .../etc/srs.conf` | 用户名或路径不同则三处全部替换，再 `daemon-reload` |
-| `etc/nginx.conf`（由 `nginx.conf.example` 复制） | `pid`/`error_log`/`access_log`/`temp`/`root` 均为相对仓库根的路径（`.run/nginx/...`、`log/...`、`src/web`） | 无需修改；仓库整体移动后仍可用 |
-| `etc/nginx.conf`（由 `nginx.conf.example` 复制） | `proxy_set_header Authorization "Basic <真实 Key>"`（第 53 行） | 重新生成 API Key 并替换（见 4.3） |
-| `scripts/start-walle.sh` | 路径由脚本位置推导 `REPO_ROOT` | 无需修改；仓库整体移动后仍可用 |
-| `src/backend/mqtt_demo_client.py` | `HOST = "127.0.0.1"` | 仅测试用；远程测试时改成 broker 地址 |
-
-> 门户页面已全部改为相对路径，`/api/` 也由同源反代提供，因此换 IP/域名时**无需修改任何 HTML**。
-
-### 4.3 EMQX API Key（必须重新生成，不要沿用）
-
-`etc/nginx.conf` 由模板 `etc/nginx.conf.example` 复制而来，模板里是占位符；**真实 Key 只存在于本机的 `etc/nginx.conf`，该文件已加入 `.gitignore`，不会入库**。换机器/上线时按下面步骤重建：
-
-1. 登录 EMQX Dashboard（`http://<host>:18083`）→ **Access Control → API Keys → Create**，按需勾选权限（门户读取用 `connections`、`monitoring` 等）。
-2. 生成 Basic 值：
-
-```bash
-KEY=<新 api_key>
-SECRET=<新 api_secret>
-printf '%s:%s' "$KEY" "$SECRET" | base64 -w0
-```
-
-3. 复制模板（首次部署），把结果替换 `etc/nginx.conf` 中 `Authorization "Basic ..."` 的整段值：
-
-```bash
-cp etc/nginx.conf.example etc/nginx.conf
-```
-
-4. 重启门户使配置生效：
-
-```bash
-./scripts/stop-walle.sh
-./scripts/start-walle.sh start
-```
-
-> 不要把含真实 Key 的 `nginx.conf` 改名后提交或发给他人；泄露后立即在 Dashboard 删除该 Key 并重建。若误提交了 `nginx.conf`，光删文件不够，必须轮换 Key。
-
-### 4.4 默认口令与 Cookie（必须改）
-
-- Dashboard 默认 `admin` / `public`：首次登录后立即在用户管理里修改密码。门户登录复用的是这套 EMQX 账号，改密后门户同步生效。
-- Erlang cookie：`/etc/emqx/emqx.conf` 中的 `node.cookie` 也是默认值，建议改成随机串后 `sudo systemctl restart emqx`。
-- 默认口令未改时，任何能访问 18083 的人都能拿到管理权限。
-
-### 4.5 测试进程不在 systemd 内
-
-`ffmpeg` 测试推流与 `mqtt_demo_client.py` 都是手动 `nohup` 启动，主机重启后不会自动恢复；需要按第 9 节命令重新拉起（生产环境应改为 systemd 或不用测试流）。
-
-### 4.6 换机器检查清单
-
-```bash
-cd /home/gs/01_walle_service/walle-service
-
-# 1) WebRTC 候选地址
-grep -nE 'candidate|listen 8000' etc/srs.conf
-
-# 2) 所有残留内网 IP（应只剩你确认过的项）
-grep -Rn '192\.168\.' etc/srs.conf etc/nginx.conf src/web/
-
-# 3) 绝对路径与真实凭据
-grep -nE '/home/gs|Authorization' etc/nginx.conf
-grep -nE 'User=|WorkingDirectory=|ExecStart=' /etc/systemd/system/srs.service
-
-# 4) 确认公网出口 IP / EIP
-curl -s https://ifconfig.me; echo
-```
-
----
-
 ## 5. 系统依赖
 
 ```bash
@@ -234,18 +136,15 @@ sudo apt-get install -y \
 ### 6.1 下载与校验
 
 ```bash
-mkdir -p /tmp/emqx-deb
-cd /tmp/emqx-deb
+#  下载地址： https://www.emqx.com/zh/downloads/enterprise
 
+# 以下载 6.3.2 版本为例
 curl -L -o emqx-enterprise-6.3.2-ubuntu24.04-arm64.deb \
   https://www.emqx.com/downloads/enterprise/6.3.2/emqx-enterprise-6.3.2-ubuntu24.04-arm64.deb
 
 echo "ea5252d8f3979ecef714ee1d570558c6f07bad61d18d55d8ebd989243790d717  emqx-enterprise-6.3.2-ubuntu24.04-arm64.deb" | sha256sum -c -
 ```
 
-> 直链会 302 到 `https://packages.emqx.io/emqx-ee/6.3.2/...`；文件约 84MB。
->
-> 安装包不长期保留：当前环境已在清理时删除该 deb（目录树中也没有它）。重复部署时按上面的 URL 重新下载并校验 sha256；安装完成后可直接删除 deb 释放约 84MB。
 
 ### 6.2 安装与启动
 
@@ -260,29 +159,59 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18083/
 
 > 注意：deb 的 postinst 只 `enable`，不会自动 `start`，必须显式启动。
 
-### 6.3 登录与 API Key
+### 6.3 登录，并修改默认密码
 
+EMQX服务启动成功后，就可以登录EMQX的控制面板（Dashboard：`http://<host>:18083`）。
 默认账号 `admin` / `public`（首次部署后请立即修改）。
 
+
+### 6.4 获取 API Key
+
+获取 EMQX的 API Key ，主要用于 Nginx 方向 和 walle 后端调用。
+
+方法：
+1. 登录 EMQX Dashboard（`http://<host>:18083`）→ **系统设置（System）→ API 密钥（API Keys）→ 创建（Create）**，按需勾选权限（或者选择管理员角色）。
+2. 把新生成的 `api_key` / `api_secret` 保存下来，后面配置Nginx和walle网站会使用到。
+
+
+### 6.5 创建内置数据库认证器（必须）
+
+walle 后端通过 EMQX 内置数据库管理 MQTT 用户（`src/backend/walle_api.py` 中 `AUTH_ID = "password_based:built_in_database"`）。全新安装的 EMQX 没有该认证器，**必须先创建**，否则门户「用户管理」会报 `Authenticator not found in the 'global' scope'`。
+
 ```bash
-cd /home/gs/01_walle_service/walle-service
+KEY=$(jq -r .api_key etc/emqx_api_key.json)
+SECRET=$(jq -r .api_secret etc/emqx_api_key.json)
 
-TOKEN=$(curl -s -X POST http://127.0.0.1:18083/api/v5/login \
+curl -s -X POST -u "$KEY:$SECRET" http://127.0.0.1:18083/api/v5/authentication \
   -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"public"}' | jq -r .token)
-
-curl -s -X POST http://127.0.0.1:18083/api/v5/api_key \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"portal","desc":"portal readonly","enable":true}' \
-  | tee etc/emqx_api_key.json
-
-chmod 600 etc/emqx_api_key.json
+  -d '{
+    "mechanism": "password_based",
+    "backend": "built_in_database",
+    "user_id_type": "username",
+    "password_hash_algorithm": {
+      "name": "sha256",
+      "salt_position": "suffix"
+    }
+  }' | jq .
 ```
 
-文件中的 `api_key` / `api_secret` 用于 Nginx 注入（见第 8 节）。
+参数说明：
 
-### 6.4 License 说明
+- `mechanism` / `backend`：`password_based` + `built_in_database`，与后端 `AUTH_ID` 对应。
+- `user_id_type`: `username`，用户以用户名（而非 clientid）登录。
+- `password_hash_algorithm`：`sha256` + `suffix`（密码哈希加盐方式，盐追加在密码后），与后端创建用户时的加盐逻辑一致。
+
+验证（返回空列表即正常，NOT_FOUND 说明认证器未创建）：
+
+```bash
+curl -s -u "$KEY:$SECRET" \
+  "http://127.0.0.1:18083/api/v5/authentication/password_based:built_in_database/users?limit=10" \
+  | jq .
+```
+
+> 也可在 Dashboard 操作：访问控制 → 客户端认证 → 创建 → 认证方式「密码认证」、数据源「内置数据库」、用户 ID 类型「username」、密码哈希算法选择 `sha256`、盐位置 `suffix`。
+
+### 6.6 License 说明
 
 未安装 license 时服务可正常启动，内置开发/社区授权：
 
@@ -301,7 +230,7 @@ chmod 600 etc/emqx_api_key.json
 ### 7.1 编译
 
 ```bash
-cd /home/gs/01_walle_service/walle-service
+cd <仓库根目录>
 
 git clone --depth 1 --branch v7.0-a4 https://github.com/ossrs/srs.git \
   thirdparty/srs
@@ -320,92 +249,61 @@ trunk/objs/                    约 318MB（含 console/players）
 trunk/objs/nginx/html/console  原生控制台
 ```
 
-### 7.2 运行配置 `etc/srs.conf`
+### 7.2 配置 `etc/srs.conf`
 
-> SRS 源码目录 `thirdparty/srs/` 只放源码与编译产物；运行配置独立放在 `etc/srs.conf`，由 systemd 的 `-c` 参数指定。
+仓库已提供模板 `etc/srs.conf.example`（入库），首次部署复制后**只需改 WebRTC 候选地址一行**：
 
-```hocon
-listen 1935;
-max_connections 800;
-daemon off;
-srs_log_tank console;
-srs_log_level trace;
+```bash
+cp etc/srs.conf.example etc/srs.conf
+```
 
-http_api {
-  enabled on;
-  listen 1985;
-  crossdomain on;
-}
+修改 `etc/srs.conf` 中 `rtc_server` 块的 `candidate`，换成你的公网 IP / EIP：
 
-http_server {
-  enabled on;
-  listen 8080;
-  dir ./objs/nginx/html;
-  crossdomain on;
-}
-
-exporter {
-  enabled on;
-  listen 9972;
-  label <环境标识>;
-  tag <环境标识>;
-}
-
+```nginx
+# 修改前（模板默认值，自动探测）：
 rtc_server {
-  enabled on;
-  listen 8000;
-  candidate 192.168.31.114;
-  tcp {
     enabled on;
     listen 8000;
-  }
+    candidate *;
+    ...
 }
 
-vhost __defaultVhost__ {
-  # 推流鉴权：每次新推流回调本机 API，校验 URL 中的 ?secret=
-  http_hooks {
-    enabled on;
-    on_publish http://127.0.0.1:9000/api/srs/hook;
-  }
-  http_remux {
-    enabled on;
-    mount [vhost]/[app]/[stream].flv;
-  }
-  hls {
-    enabled on;
-    hls_fragment 2;
-    hls_window 10;
-  }
-  rtc {
-    enabled on;
-    rtmp_to_rtc on;
-  }
-}
+# 修改后：
+    candidate <你的公网IP>;
 ```
 
-### 7.3 systemd 单元 `/etc/systemd/system/srs.service`
+- 云主机 / NAT 环境**必须填公网 IP**，否则 SDP answer 携带错误地址，公网浏览器 ICE 无法连通，WebRTC（WHEP/WHIP、`/players/rtc_player.html`）黑屏超时；HTTP-FLV、HLS、RTMP 推流不受影响。
+- 安全组放行 **UDP 8000**；本配置启用了 `rtc_server.tcp`，**TCP 8000** 也要放行（若只用 UDP，把 `tcp { enabled on; }` 改为 `off`）。
+- `exporter.label` / `exporter.tag` 为部署环境标识，非必须，多环境时改成可区分名字。
+
+换机器检查：
+
+```bash
+grep -nE 'candidate|listen 8000' etc/srs.conf
+curl -s https://ifconfig.me; echo   # 确认公网出口 IP / EIP
+```
+
+### 7.3 修改 `etc/srs.service`
+
+仓库已提供模板 `etc/srs.service.example`（入库），复制后**改 4 个字段**（用户名 + 仓库路径）：
+
+```bash
+cp etc/srs.service.example etc/srs.service
+```
+
+修改 `etc/srs.service`，把模板中的 `gs` 和 `/home/gs/01_walle_service/...` 替换为你的实际用户与仓库路径：
 
 ```ini
-[Unit]
-Description=SRS 7.0.215 media server
-After=network-online.target
-Wants=network-online.target
-
 [Service]
-Type=simple
-User=gs
-Group=gs
-WorkingDirectory=/home/gs/01_walle_service/walle-service/thirdparty/srs/trunk
-ExecStart=/home/gs/01_walle_service/walle-service/thirdparty/srs/trunk/objs/srs -c /home/gs/01_walle_service/walle-service/etc/srs.conf
-Restart=on-failure
-RestartSec=5
-LimitNOFILE=10000
-
-[Install]
-WantedBy=multi-user.target
+User=<你的用户名>
+Group=<你的用户名>
+WorkingDirectory=<仓库路径>/thirdparty/srs/trunk
+ExecStart=<仓库路径>/thirdparty/srs/trunk/objs/srs -c <仓库路径>/etc/srs.conf
 ```
 
-安装：
+> `User` 不存在时 systemd 启动会报 `status=217/USER`。`max_connections` 必须小于 `LimitNOFILE`（本配置 800 / 10000）。
+
+### 7.4 安装运行
 
 ```bash
 sudo install -m 0644 etc/srs.service /etc/systemd/system/srs.service
@@ -414,7 +312,11 @@ sudo systemctl enable --now srs
 systemctl status srs --no-pager
 ```
 
-> `max_connections` 必须小于 `LimitNOFILE`；本配置为 800 / 10000。
+### 7.5 验证
+
+```bash
+curl http://127.0.0.1:1985/api/v1/streams/
+```
 
 ---
 
@@ -422,178 +324,71 @@ systemctl status srs --no-pager
 
 ### 8.1 配置 `etc/nginx.conf`
 
-仓库里只提交模板 `etc/nginx.conf.example`，首次部署先复制并填入真实 Key：
+仓库已提供模板 `etc/nginx.conf.example`（入库），复制后**只需把 `/emqx-api/` location 中的 `<BASE64(api_key:api_secret)>` 占位符替换为真实值**：
 
 ```bash
 cp etc/nginx.conf.example etc/nginx.conf
 ```
 
-模板内容如下（`Authorization` 行为占位符）：
+修改 `etc/nginx.conf` 第 67 行（`/emqx-api/` location）：
+
 ```nginx
-worker_processes 1;
-pid .run/nginx/nginx.pid;
-error_log log/error.log warn;
+# 修改前：
+    proxy_set_header Authorization "Basic <BASE64(api_key:api_secret)>";
 
-events { worker_connections 1024; }
-
-http {
-    include /etc/nginx/mime.types;
-    default_type application/octet-stream;
-    access_log log/access.log;
-
-    client_body_temp_path .run/nginx/temp/client_body;
-    proxy_temp_path       .run/nginx/temp/proxy;
-    fastcgi_temp_path     .run/nginx/temp/fastcgi;
-    uwsgi_temp_path       .run/nginx/temp/uwsgi;
-    scgi_temp_path        .run/nginx/temp/scgi;
-
-    server {
-        listen 8088;
-        server_name _;
-
-        root src/web;
-        index index.html;
-
-        location / { try_files $uri $uri/ /index.html; }
-
-        # SRS 推流鉴权回调专用：只允许本机 SRS 直连 9000，禁止外部访问
-        location = /api/srs/hook { deny all; }
-
-        location /api/ {
-            proxy_pass http://127.0.0.1:9000;
-            proxy_http_version 1.1;
-            proxy_set_header Host $host;
-            proxy_read_timeout 30s;
-        }
-
-        # 网页 MQTT over WebSocket：与门户同源，浏览器一律连 ws(s)://<当前主机>/mqtt，
-        # 不再写死 8083/8084。依赖 EMQX 的 ws 监听器（默认 8083，路径 /mqtt）保持开启。
-        location /mqtt {
-            proxy_pass http://127.0.0.1:8083;
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection "upgrade";
-            proxy_set_header Host $host;
-            proxy_buffering off;
-            proxy_read_timeout 3600s;
-        }
-
-        location /emqx-api/ {
-            proxy_pass http://127.0.0.1:18083/api/v5/;
-            proxy_http_version 1.1;
-            proxy_set_header Host $host;
-            proxy_set_header Authorization "Basic <BASE64(api_key:api_secret)>";
-            proxy_read_timeout 60s;
-        }
-
-        location /srs-api/ {
-            proxy_pass http://127.0.0.1:1985/api/v1/;
-            proxy_http_version 1.1;
-            proxy_set_header Host $host;
-            proxy_read_timeout 60s;
-        }
-
-        location /srs/ {
-            proxy_pass http://127.0.0.1:8080/;
-            proxy_http_version 1.1;
-            proxy_set_header Host $host;
-            proxy_buffering off;
-            proxy_read_timeout 3600s;
-        }
-
-        location = /metrics {
-            proxy_pass http://127.0.0.1:9972/metrics;
-        }
-    }
-}
+# 修改后（把占位符替换为实际生成的 base64 值）：
+    proxy_set_header Authorization "Basic <base64 编码后的 api_key:api_secret>";
 ```
 
-生成 `Authorization` 值：
+> 注意，这里不是简单的拷贝复制，生成 `<BASE64(api_key:api_secret)>` 的规则如下：（需要使用 6.4 节获取到的 API Key 和 API Secret）：
 
 ```bash
-KEY=$(jq -r .api_key etc/emqx_api_key.json)
-SECRET=$(jq -r .api_secret etc/emqx_api_key.json)
-printf '%s:%s' "$KEY" "$SECRET" | base64 -w0
+KEY=<6.4 节获取到的 API Key>
+SECRET=<6.4 节获取到的 API Secret>
+BASIC=$(printf '%s:%s' "$KEY" "$SECRET" | base64 -w0)
+echo "生成的 Basic 值: $BASIC"
+
+# 把 etc/nginx.conf 中 <BASE64(api_key:api_secret)> 替换为真实值
+sed -i "s|<BASE64(api_key:api_secret)>|$BASIC|" etc/nginx.conf
+
+# 验证替换成功（应输出带真实 base64 的整行，不再含 <BASE64...>）
+grep -n 'Authorization "Basic' etc/nginx.conf
 ```
 
-把结果替换 `<BASE64(api_key:api_secret)>`。
 
-> 管理员登录已改由后端 `walle_api.py` 直接调用 EMQX `/api/v5/login` 校验，nginx 不再透传该路径。
-
-### 8.2 启动脚本 `scripts/start-walle.sh`
+验证 EMQX API 调用正常：
 
 ```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-# 路径全部从脚本自身位置推导；仓库整体移动后无需修改
-BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$BASE_DIR/.." && pwd)"
-CONF="$REPO_ROOT/etc/nginx.conf"
-RUN_DIR="$REPO_ROOT/.run/nginx"
-LOG_DIR="$REPO_ROOT/log"
-PID_FILE="$RUN_DIR/nginx.pid"
-PORTAL_URL="http://127.0.0.1:8088/"
-
-case "${1:-start}" in
-  start)
-    if [ ! -f "$CONF" ]; then
-      echo "missing $CONF, copy etc/nginx.conf.example to etc/nginx.conf first" >&2
-      exit 1
-    fi
-    mkdir -p "$LOG_DIR" "$RUN_DIR/temp/client_body" "$RUN_DIR/temp/proxy" "$RUN_DIR/temp/fastcgi" "$RUN_DIR/temp/uwsgi" "$RUN_DIR/temp/scgi"
-    if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-      echo "portal already running (pid $(cat "$PID_FILE"))"
-      exit 0
-    fi
-    rm -f "$PID_FILE"
-    nginx -p "$REPO_ROOT" -c "$CONF"
-    echo "portal started (pid $(cat "$PID_FILE")), $PORTAL_URL"
-    ;;
-  stop)
-    if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-      PID="$(cat "$PID_FILE")"
-      kill -QUIT "$PID"
-      for _ in $(seq 1 25); do
-        kill -0 "$PID" 2>/dev/null || break
-        sleep 0.2
-      done
-      rm -f "$PID_FILE"
-      echo "portal stopped"
-    else
-      rm -f "$PID_FILE"
-      echo "portal not running"
-    fi
-    ;;
-  status)
-    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$PORTAL_URL" || true)
-    echo "portal http=$code"
-    ;;
-  *)
-    echo "usage: $0 {start|stop|status}"
-    exit 1
-    ;;
-esac
+curl -s -u "$KEY:$SECRET" 'http://127.0.0.1:18083/api/v5/nodes' | jq -c '[.[]|{node,edition,node_status}]'
+# 期望：[{"node":"emqx@127.0.0.1","edition":"Enterprise","node_status":"running"}]
 ```
 
-```bash
-chmod +x scripts/start-walle.sh scripts/stop-walle.sh
-./scripts/start-walle.sh start
-./scripts/start-walle.sh status
-./scripts/stop-walle.sh
-```
 
-> 门户既可用 `scripts/start-walle.sh` 手动启停，也可由 `walle.service` 托管（见 8.3）；Nginx 以 `gs` 用户运行，监听 8088（非特权端口）。
+### 8.2 配置 `etc/walle.conf`
 
-### 8.3 walle.conf 与 walle.service（部署脚本）
-
-`etc/walle.conf` 存放门户保密配置（`EMQX_API_KEY` / `EMQX_API_SECRET`），权限 600，已加入 `.gitignore`，**不入库**。首次部署从模板复制并填写：
+仓库已提供模板 `etc/walle.conf.example`（入库），复制后将占位符替换为 6.4 节获取到的 API Key 和 API Secret：
 
 ```bash
 cp etc/walle.conf.example etc/walle.conf
-chmod 600 etc/walle.conf
-# 编辑 etc/walle.conf，把占位值替换为真实 api_key / api_secret
+
+vi etc/walle.conf
 ```
+
+> 说明：`etc/walle.conf`和`etc/nginx.conf`使用的 API Key 和 API Secret 可以不一样，可以在生成两套 API Key 和 API Secret 后，分别用于门户和 Nginx，比如 Nginx 的权限底一些，门户的权限高一些。这里使用一套。
+
+
+### 8.3 配置 `etc/walle.service`
+
+仓库已提供模板 `etc/walle.service.example`（入库），复制后**改 4 个字段**（用户名 + 仓库路径）：
+
+```bash
+cp etc/walle.service.example etc/walle.service
+
+vi etc/walle.service
+```
+
+
+### 8.4 部署脚本
 
 `scripts/deploy.sh` 依次完成 3 件事：
 
@@ -608,31 +403,22 @@ chmod 600 etc/walle.conf
 sudo systemctl enable --now walle
 ```
 
-生成的 `walle.service` 为 `Type=forking`，`EnvironmentFile=/etc/walle/walle.conf`，`ExecStart` 调用仓库内的 `scripts/start-walle.sh start`，`PIDFile` 指向仓库根的 `.run/nginx/nginx.pid`。该服务只托管门户（nginx），SRS 仍由 `srs.service` 管理。
 
-常用操作：
+### 8.5 启动和停止服务脚本
+
+
+使用方法：
 
 ```bash
-systemctl status walle --no-pager
-sudo systemctl stop walle
-sudo journalctl -u walle -n 50 --no-pager
+chmod +x scripts/start-walle.sh scripts/stop-walle.sh
+./scripts/start-walle.sh start
+./scripts/start-walle.sh status
+./scripts/stop-walle.sh
 ```
 
-> 门户可以由 `walle.service` 托管，也可以直接手动执行 `./scripts/start-walle.sh start|status` 与 `./scripts/stop-walle.sh`（例如调试时）。
+> 门户既可用 `scripts/start-walle.sh` 手动启停，也可由 `walle.service` 托管。
 
-### 8.4 用户管理 API（SQLite + EMQX）
 
-`src/backend/walle_api.py` 是零依赖的 Python 标准库服务，监听 `127.0.0.1:9000`，由 nginx 的 `/api/` 反代进来。
-
-- **用户名**：创建后不可修改，同时作为 EMQX 内置数据库的 `user_id`。
-- **密码**：只保存在 EMQX（sha256 + suffix 加盐），walle 不存密码。
-- **角色**：`客户` / `设备` 二选一，保存在 `src/backend/data/users.db`（SQLite 单文件，自动创建）；两种角色在 EMQX 侧都不勾选「是否为超级用户」（`is_superuser=false`），权限由 ACL 控制。
-- **接口**：`GET/POST /api/users`、`PUT/DELETE /api/users/{用户名}`；均要求请求头 `Authorization: Bearer <token>`。
-- **鉴权**：管理员在登录页选择「管理员」后调用 `POST /api/admin/login`（校验 EMQX Dashboard 账号）拿到 token，token 只保存在内存、有效期 12 小时，进程重启即失效；客户登录 `POST /api/login` 不签发管理权限。
-
-启停已合并进门户脚本：`start-walle.sh` 会同时拉起 nginx 与 API，`stop-walle.sh` 会同时停止两者；API 日志在 `log/walle-api.log`，pid 在 `.run/nginx/walle-api.pid`。
-
-> SQLite 直接使用 Python 内置模块，不需要安装 MySQL/PostgreSQL；备份只需拷贝 `src/backend/data/users.db`。
 
 ---
 
@@ -684,7 +470,7 @@ echo $! > mqtt_demo.pid
 ## 11. 验证步骤
 
 ```bash
-cd /home/gs/01_walle_service/walle-service
+cd <仓库根目录>
 KEY=$(jq -r .api_key etc/emqx_api_key.json)
 SECRET=$(jq -r .api_secret etc/emqx_api_key.json)
 
@@ -693,6 +479,8 @@ curl -s -u "$KEY:$SECRET" 'http://127.0.0.1:18083/api/v5/clients?limit=2' | jq -
 curl -s -u "$KEY:$SECRET" 'http://127.0.0.1:18083/api/v5/subscriptions?limit=2' | jq -c '{count:.meta.count}'
 curl -s -u "$KEY:$SECRET" 'http://127.0.0.1:18083/api/v5/nodes' | jq -c '[.[]|{node,version,edition,node_status}]'
 curl -s -u "$KEY:$SECRET" 'http://127.0.0.1:18083/api/v5/metrics' | jq -c '.[0]|{node,fields:(keys|length)}'
+# 内置数据库认证器（应返回 data 数组，NOT_FOUND 说明 6.4 节未执行）
+curl -s -u "$KEY:$SECRET" 'http://127.0.0.1:18083/api/v5/authentication/password_based:built_in_database/users?limit=2' | jq -c '{count:.meta.count}'
 
 # SRS
 curl -sL http://127.0.0.1:1985/api/v1/streams/ | jq -c '{total,streams:[.streams[]|{name,app,clients:(.clients|length)}]}'
@@ -713,7 +501,7 @@ curl -s -o /dev/null -w 'users=%{http_code}\n' http://127.0.0.1:8088/api/users
 期望（有推流与 MQTT 测试客户端时）：
 
 ```text
-count=1；count=1；edition=Enterprise / version=6.3.2 / running；fields=113
+count=1；count=1；edition=Enterprise / version=6.3.2 / running；fields=113；authenticator count=0（或 N，无用户时为 0）
 total=1（live/test）；total>=1；exporter=200
 portal=200；flv=200 type=video/x-flv
 login=200；bad-login=401
@@ -723,31 +511,9 @@ login=200；bad-login=401
 
 ---
 
-## 12. Docker 说明
 
-Docker 引擎保留，但**镜像已全部清空**；`/etc/docker/daemon.json` 内容：
 
-```json
-{
-  "registry-mirrors": [
-    "https://docker.m.daocloud.io",
-    "https://docker.1ms.run"
-  ],
-  "log-driver": "json-file",
-  "log-opts": {
-    "max-size": "50m",
-    "max-file": "3"
-  }
-}
-```
-
-用途：加速镜像拉取（直连 Docker Hub 不可用时）、限制容器日志大小。本方案不需要 Docker 运行任何服务。
-
-清理记录：6 个镜像（10 个 tag，约 922.4MB）→ 0；容器 0；保留 6 个本地卷（约 331KB）。
-
----
-
-## 13. 运行注意事项
+## 12. 运行注意事项
 
 1. **EMQX 无 CORS**：浏览器直连 18083 不会返回 `Access-Control-Allow-Origin`，`OPTIONS` 预检 500；必须经门户同源反代。新增接口时也要走 `/emqx-api/`。
 2. **SRS ulimit**：`max_connections` 必须小于 `LimitNOFILE`，否则启动报错；systemd 已设 10000。
@@ -757,11 +523,11 @@ Docker 引擎保留，但**镜像已全部清空**；`/etc/docker/daemon.json` �
 6. **API Key 注入风险**：能访问 8088 的人即可调用只读管理接口，生产应加 BFF 鉴权或限制来源 IP。
 7. **SRS 无录制持久化**：当前未启用 DVR；重建主机不会保留录制文件。
 
-其余安全分析与演进项见 [walle_detiled_design.md](./walle_detiled_design.md) 第 12、13 节。
+其余安全分析与演进项见 [walle_detiled_design.md](./walle_detiled_design.md) 第 13、14 节。
 
 ---
 
-## 14. 附录：首次部署验证结果（2026-11-15）
+## 13. 附录：首次部署验证结果（2026-11-15）
 
 ```text
 systemctl is-active emqx  → active

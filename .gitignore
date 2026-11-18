@@ -24,6 +24,8 @@ scripts/walle.service
 etc/emqx_api_key.json
 etc/nginx.conf
 etc/walle.conf
+etc/srs.conf
+etc/srs.service
 
 # 用户角色数据库（本机数据）
 src/backend/data/

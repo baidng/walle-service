@@ -74,6 +74,26 @@ sudo systemctl start emqx       # 安装后服务为 inactive，需手动启动
  "expiry":false,"expiry_at":"2029-03-01"}
 ```
 
+上面的GET的简略写法，真实是这样的：
+
+```json
+# 1. 用默认管理员账号登录（admin / public）
+curl -s -X POST http://127.0.0.1:18083/api/v5/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"public"}'
+
+# 返回
+{"version":"6.3.3","token":"<TOKEN>","role":"administrator","namespace":null,"license":{"edition":"ee"}}
+
+
+# 把 <TOKEN> 换成上面拿到的实际值
+curl -s http://127.0.0.1:18083/api/v5/license \
+  -H "Authorization: Bearer <TOKEN>"
+
+# 返回
+{"type":"community","max_connections":10000000,"email":"contact@emqx.io","max_sessions":10000000,"start_at":"2025-03-02","customer_type":11,"max_tps":"infinity","deployment":"Development","customer":"Developer","expiry":false,"expiry_at":"2029-03-01"}
+```
+
 登录响应中 `"license":{"edition":"ee"}`，`/api/v5/nodes` 的 `edition` 为 `Enterprise`。即：**无 license 也可启动，走内置开发/社区授权**；生产需替换为正式 license。
 
 ---
@@ -190,14 +210,25 @@ docs/screenshots/srs_play.jpg       （播放器区域）
 
 ## 6. SRS 编译与运行（裸机）
 
-```text
-源码：~/01_walle_service/walle-service/thirdparty/srs（v7.0-a4）
-配置：cd trunk && ./configure --srt=on
-编译：make -j8（make.rc=0）
-产物：trunk/objs/srs = 30M；trunk/objs = 318M
-版本：7.0.215
-运行：ulimit -n 10000；nohup ./objs/srs -c ~/01_walle_service/walle-service/etc/srs.conf &
-PID：73637（日志 srs.log）
+```bash
+# 源码：~/01_walle_service/walle-service/thirdparty/srs（v7.0-a4）
+cd trunk
+# 配置：
+./configure --srt=on
+# 编译：
+make -j8
+#产物：trunk/objs/srs = 30M；trunk/objs = 318M
+
+# 查看版本号：
+./objs/srs -V
+# 运行命令：
+ulimit -n 10000  # 把当前 shell 会话（以及它启动的进程）能打开的最大文件描述符数设为 10000
+./objs/srs -c ~/01_walle_service/walle-service/etc/srs.conf 
+
+
+# 验证服务是否正常
+curl http://127.0.0.1:1985/api/v1/streams/
+
 ```
 
 `max_connections 800`，避免再次触发容器版遇到的 `ulimit 1024` 限制。

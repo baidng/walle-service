@@ -16,7 +16,7 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 | 消息层 | EMQX Enterprise 6.3.2 | MQTT 连接、主题路由、账号认证（登录校验复用此账号体系） |
 | 媒体层 | SRS 7.0.215 | RTMP 接收、HTTP-FLV/HLS/WebRTC 分发、Prometheus 指标 |
 
-服务端**不持有业务数据库**，当前所有业务数据（设备、告警、录像）均为前端占位或直接读 EMQX/SRS 实时接口；持久化属于后续演进项（见第 11 节）。
+服务端**不持有业务数据库**，当前所有业务数据（设备、告警、录像）均为前端占位或直接读 EMQX/SRS 实时接口；持久化属于后续演进项（见第 12 节）。
 
 ---
 
@@ -129,7 +129,7 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 2. **客户登录校验角色**：服务端查 SQLite，角色必须是「客户」，「设备」账号（小车）不能登录门户；管理员入口不做该校验。
 3. **token 不参与后续鉴权**：门户页面与查询接口均不使用该 token；真正的接口凭据是 Nginx 注入的 API Key。
 4. **失败处理**：密码错误 401；角色不符 403（提示来自后端）；EMQX 不可达 502；登录按钮在请求期间 `disabled`，防止重复提交。
-5. **已知缺陷**：`/api/login` 与 `/api/admin/login` 未做限流与失败计数，存在暴力破解风险（见第 9 节）；`/api/users` 已要求管理员 token。
+5. **已知缺陷**：`/api/login` 与 `/api/admin/login` 未做限流与失败计数，存在暴力破解风险（见第 13 节）；`/api/users` 已要求管理员 token。
 
 ---
 
@@ -178,9 +178,47 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 
 ---
 
-## 8. MQTT 业务约定
+## 8. 用户管理 API 设计
 
-### 8.1 主题规范
+`src/backend/walle_api.py` 是零依赖的 Python 标准库服务，监听 `127.0.0.1:9000`，由 Nginx 的 `/api/` 反代进来。它不依赖外部数据库服务：密码存于 EMQX，角色存于本地 SQLite。
+
+### 8.1 数据存储分工
+
+| 数据 | 存储位置 | 说明 |
+|---|---|---|
+| 用户名 | EMQX 内置数据库 + SQLite | 创建后不可修改，同时作为 EMQX 的 `user_id` |
+| 密码 | EMQX 内置数据库 | sha256 + suffix 加盐，walle 不存密码 |
+| 角色 | `src/backend/data/users.db`（SQLite） | `客户` / `设备` 二选一，单文件自动创建 |
+| 超级用户标记 | EMQX | 两种角色均 `is_superuser=false`，权限由 ACL 控制 |
+
+### 8.2 接口
+
+| 接口 | 方法 | 鉴权 | 用途 |
+|---|---|---|---|
+| `/api/admin/login` | POST | EMQX Dashboard 账号 | 管理员登录，签发管理 token |
+| `/api/login` | POST | MQTT CONNECT 校验 | 客户登录（不签发管理权限） |
+| `/api/users` | GET / POST | `Bearer <token>` | 用户列表 / 新增用户 |
+| `/api/users/{用户名}` | PUT / DELETE | `Bearer <token>` | 改密 / 删除用户 |
+
+### 8.3 鉴权与 token
+
+- 管理员在登录页选择「管理员」→ 调用 `POST /api/admin/login` → `walle_api.py` 调 EMQX `/api/v5/login` 校验 Dashboard 账号（非 administrator 拒绝）→ 签发内存 token。
+- token 只保存在内存、有效期 12 小时，进程重启即失效。
+- 客户登录 `POST /api/login` 不签发管理权限（见第 5 节登录流程）。
+- 所有 `/api/users*` 操作均要求请求头 `Authorization: Bearer <token>`。
+
+### 8.4 启停与运维
+
+- 启停合并进门户脚本：`scripts/start-walle.sh` 同时拉起 nginx 与 API，`scripts/stop-walle.sh` 同时停止两者。
+- API 日志：`log/walle-api.log`；pid：`.run/nginx/walle-api.pid`。
+- SQLite 使用 Python 内置 `sqlite3` 模块，无需安装 MySQL/PostgreSQL；备份只需拷贝 `src/backend/data/users.db`。
+- 部署/上线步骤见 [walle_deployment_require.md](./walle_deployment_require.md) 第 8 节。
+
+---
+
+## 9. MQTT 业务约定
+
+### 9.1 主题规范
 
 | Topic | 方向 | 用途 | QoS |
 |---|---|---|---|
@@ -195,7 +233,7 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 - 指令载荷建议 JSON：`{"method":"move","value":"forward","seq":123,"ts":...}`，`seq` 用于设备端去重。
 - 运动指令采用“按下发、松开停”语义，前端在 `mouseup`/`mouseleave`/`touchend` 时发 `stop`，防止失控。
 
-### 8.2 设备侧状态
+### 9.2 设备侧状态
 
 | 事件 | 上报主题 | 预期周期 |
 |---|---|---|
@@ -203,15 +241,15 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 | 状态 | `state` | 1s（位置/速度）、30s（电量） |
 | 告警 | `alarm` | 事件触发即上报 |
 
-### 8.3 测试用客户端
+### 9.3 测试用客户端
 
 `src/backend/mqtt_demo_client.py` 是零依赖 MQTT 客户端，用于验证连接与订阅（订阅 `demo/#`），不属于业务代码。
 
 ---
 
-## 9. SRS 集成设计
+## 10. SRS 集成设计
 
-### 9.1 推拉流链路
+### 10.1 推拉流链路
 
 ```text
 小车/ffmpeg ──RTMP 1935──▶ SRS ──┬─ HTTP-FLV 8080  → 门户 /srs/{app}/{stream}.flv
@@ -223,7 +261,7 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 - 播放地址（同源反代后）：`http://<host>:8088/srs/live/{stream}.flv`。
 - 门户实时监控页使用 mpegts.js 播 HTTP-FLV，`isLive: true`、`hasAudio: false`（当前测试流带音频但页面静音播放，规避浏览器自动播放限制）。
 
-### 9.2 媒体侧关键配置
+### 10.2 媒体侧关键配置
 
 | 配置项 | 值 | 说明 |
 |---|---|---|
@@ -234,7 +272,7 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 | `max_connections` | 800 | 必须小于 systemd `LimitNOFILE=10000` |
 | `exporter` | 9972 | Prometheus 指标 |
 
-### 9.3 使用的接口
+### 10.3 使用的接口
 
 | 接口 | 用途 |
 |---|---|
@@ -245,9 +283,9 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 
 ---
 
-## 10. 控制台功能设计
+## 11. 控制台功能设计
 
-### 10.1 管理员控制台（admin.html）
+### 11.1 管理员控制台（admin.html）
 
 左侧菜单为“平铺 + 可折叠分组”，面板通过 `data-panel` 切换，**同一页面内切换不刷新**。数据加载：进入页面全量拉一次，之后每 5s 轮询 EMQX 与 SRS。
 
@@ -266,7 +304,7 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 | 普通用户管理 | — | 规划：用户表 + 设备绑定 |
 | 日志 | — | 规划：EMQX/SRS/登录日志汇聚 |
 
-### 10.2 普通用户控制台（user.html）
+### 11.2 普通用户控制台（user.html）
 
 | 面板 | 数据来源 | 状态 |
 |---|---|---|
@@ -278,7 +316,7 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 
 运动控制指令当前只在页面“最近指令”日志中回显，真实实现需增加服务端发布接口（见 10.3）。
 
-### 10.3 待补齐的服务端能力
+### 11.3 待补齐的服务端能力
 
 前端已按下列接口约定留出调用位置，但服务端尚未实现：
 
@@ -294,7 +332,7 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 
 ---
 
-## 11. 数据模型规划
+## 12. 数据模型规划
 
 当前无数据库。规划中的最小模型：
 
@@ -313,7 +351,7 @@ recording (id, device_id, path, start_at, end_at, size, trigger)
 
 ---
 
-## 12. 安全设计与已知风险
+## 13. 安全设计与已知风险
 
 | 风险 | 现状 | 处置建议 |
 |---|---|---|
@@ -327,7 +365,7 @@ recording (id, device_id, path, start_at, end_at, size, trigger)
 
 ---
 
-## 13. 演进路线
+## 14. 演进路线
 
 1. 增加 BFF 层：服务端会话、角色校验、指令下发、运维动作。
 2. 接入数据库，落地设备/告警/录像模型（用户角色已用 SQLite 落地）。
