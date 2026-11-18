@@ -117,6 +117,7 @@
       <div class="menu-group-title"><span class="ico">📡</span>MQTT<span class="arrow">▶</span></div>
       <div class="menu-children">
         <div class="menu-item" data-panel="mqtt-overview">概览</div>
+        <div class="menu-item" data-panel="mqtt-clients">客户端</div>
         <div class="menu-item" data-panel="mqtt-users">用户管理</div>
         <div class="menu-item" data-panel="bindings">设备绑定</div>
       </div>
@@ -185,6 +186,25 @@
       <div class="card"><h3>订阅数</h3><div class="big" id="mq-sub">-</div><div class="sub">活跃订阅</div></div>
       <div class="card"><h3>入站消息/秒</h3><div class="big" id="mq-in">-</div><div class="sub">EMQX 指标</div></div>
       <div class="card"><h3>出站消息/秒</h3><div class="big" id="mq-out">-</div><div class="sub">EMQX 指标</div></div>
+    </div>
+  </section>
+
+  <section class="panel" data-panel="mqtt-clients">
+    <h2>MQTT · 客户端</h2>
+    <p class="lead">当前接入 EMQX 的客户端连接，支持按客户端 ID、用户名、IP 模糊过滤；数据来自 <code>/emqx-api/clients</code>。</p>
+    <div class="card">
+      <div class="user-form">
+        <input id="mc-q-clientid" placeholder="客户端 ID（模糊）" autocomplete="off" />
+        <input id="mc-q-username" placeholder="用户名（模糊）" autocomplete="off" />
+        <input id="mc-q-ip" placeholder="IP 地址" autocomplete="off" />
+        <button class="btn" id="mc-refresh">刷新</button>
+        <button class="btn" id="mc-export">导出 CSV</button>
+        <span id="mc-count" style="align-self:center;color:var(--muted);font-size:12px"></span>
+      </div>
+      <table>
+        <thead><tr><th>客户端 ID</th><th>用户名</th><th>状态</th><th>IP 地址</th><th>心跳</th><th>Clean Start</th><th>会话过期间隔</th><th>连接时间</th><th>操作</th></tr></thead>
+        <tbody id="mc-tbody"><tr><td colspan="9" style="color:var(--muted)">加载中…</td></tr></tbody>
+      </table>
     </div>
   </section>
 
@@ -371,6 +391,7 @@ function showPanel(name) {
   nav.querySelectorAll(".menu-item").forEach(i => i.classList.remove("active"));
   if (el) { el.classList.add("active"); crumb.textContent = el.textContent.trim(); }
   if (name === "mqtt-users") loadUsers();
+  if (name === "mqtt-clients") loadMqttClients();
   if (name === "bindings") loadBindings();
   if (name === "srs-auth") loadStreamSecret();
   if (name === "system") loadHttpsStatus();
@@ -568,6 +589,94 @@ document.getElementById("bind-submit").addEventListener("click", createBinding);
 document.getElementById("bindings-tbody").addEventListener("click", e => {
   const btn = e.target.closest("button[data-act='unbind']");
   if (btn) deleteBinding(btn.dataset.device);
+});
+
+// --- MQTT 客户端（EMQX /clients，前端模糊过滤 + 踢除 + 导出） ---
+let mcCache = [];
+let mcLoaded = false;
+function mcFilters() {
+  return {
+    clientid: document.getElementById("mc-q-clientid").value.trim().toLowerCase(),
+    username: document.getElementById("mc-q-username").value.trim().toLowerCase(),
+    ip: document.getElementById("mc-q-ip").value.trim().toLowerCase(),
+  };
+}
+function mcFiltered() {
+  const f = mcFilters();
+  return mcCache.filter(c =>
+    (!f.clientid || String(c.clientid || "").toLowerCase().includes(f.clientid)) &&
+    (!f.username || String(c.username || "").toLowerCase().includes(f.username)) &&
+    (!f.ip || String(c.ip_address || "").toLowerCase().includes(f.ip))
+  );
+}
+function mcTime(s) {
+  if (!s) return "-";
+  const d = new Date(s);
+  return isNaN(d) ? s : d.toLocaleString("zh-CN", { hour12: false });
+}
+async function loadMqttClients() {
+  const tb = document.getElementById("mc-tbody");
+  if (!mcLoaded) tb.innerHTML = '<tr><td colspan="9" style="color:var(--muted)">加载中…</td></tr>';
+  try {
+    const data = await fetchJSON("/emqx-api/clients?limit=1000");
+    mcCache = data.data || [];
+    mcLoaded = true;
+    renderMqttClients();
+  } catch (e) {
+    tb.innerHTML = `<tr><td colspan="9" style="color:var(--bad)">加载失败：${esc(e.message)}</td></tr>`;
+  }
+}
+function renderMqttClients() {
+  const rows = mcFiltered();
+  document.getElementById("mc-count").textContent = `${rows.length} / ${mcCache.length} 个客户端`;
+  const tb = document.getElementById("mc-tbody");
+  if (!rows.length) {
+    tb.innerHTML = '<tr><td colspan="9" style="color:var(--muted)">无匹配的客户端</td></tr>';
+    return;
+  }
+  tb.innerHTML = rows.map(c => `<tr>
+    <td><code>${esc(c.clientid)}</code></td>
+    <td>${esc(c.username || "-")}</td>
+    <td>${c.connected ? '<span class="tag ok">已连接</span>' : '<span class="tag bad">已断开</span>'}</td>
+    <td>${esc(c.ip_address || "-")}${c.port ? ":" + esc(c.port) : ""}</td>
+    <td>${esc(c.keepalive ?? "-")}</td>
+    <td>${c.clean_start ? "true" : "false"}</td>
+    <td>${esc(c.expiry_interval ?? "-")}</td>
+    <td>${esc(mcTime(c.connected_at))}</td>
+    <td><div class="row-actions"><button class="btn danger" data-act="kick" data-client="${esc(c.clientid)}">踢除</button></div></td>
+  </tr>`).join("");
+}
+async function kickClient(clientid) {
+  if (!confirm(`确认踢除客户端 ${clientid}？该连接会被 EMQX 立即断开。`)) return;
+  try {
+    const r = await fetch("/emqx-api/clients/" + encodeURIComponent(clientid), { method: "DELETE" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    await loadMqttClients();
+  } catch (e) {
+    alert("踢除失败：" + e.message);
+  }
+}
+function exportMqttClients() {
+  const rows = mcFiltered();
+  if (!rows.length) { alert("没有可导出的数据"); return; }
+  const head = ["clientid", "username", "connected", "ip_address", "port", "keepalive", "clean_start", "expiry_interval", "connected_at"];
+  const csv = [head.join(",")].concat(rows.map(c =>
+    head.map(k => `"${String(c[k] ?? "").replace(/"/g, '""')}"`).join(",")
+  )).join("\r\n");
+  const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "mqtt-clients-" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-") + ".csv";
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+document.getElementById("mc-refresh").addEventListener("click", loadMqttClients);
+document.getElementById("mc-export").addEventListener("click", exportMqttClients);
+["mc-q-clientid", "mc-q-username", "mc-q-ip"].forEach(id =>
+  document.getElementById(id).addEventListener("input", renderMqttClients));
+document.getElementById("mc-tbody").addEventListener("click", e => {
+  const btn = e.target.closest("button[data-act='kick']");
+  if (btn) kickClient(btn.dataset.client);
 });
 
 async function loadEMQX() {
