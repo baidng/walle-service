@@ -109,7 +109,7 @@ Nginx（独立实例，由 walle.service 托管或手动启动）
 sudo apt-get update
 sudo apt-get install -y \
   curl jq git nginx build-essential pkg-config libssl-dev zlib1g-dev \
-  automake cmake tcl ffmpeg
+  automake cmake tcl ffmpeg certbot
 ```
 
 实测版本（Ubuntu 24.04 arm64）：
@@ -128,6 +128,7 @@ sudo apt-get install -y \
 | cmake | 3.28.3-1build7 |
 | tcl | 8.6.14build1 |
 | ffmpeg | 7:6.1.1-3ubuntu5 |
+| certbot | 1.9.0 |
 
 ---
 
