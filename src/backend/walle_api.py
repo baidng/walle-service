@@ -11,6 +11,7 @@
 """
 import base64
 import contextlib
+import hmac
 import json
 import os
 import secrets
@@ -82,6 +83,23 @@ def load_credentials():
 
 
 EMQX_KEY, EMQX_SECRET = load_credentials()
+
+
+def load_media_secret():
+    """SRS 推流鉴权密钥：优先环境变量，其次 etc/walle.conf；空值表示未配置。"""
+    secret = os.environ.get("MEDIA_SERVER_SECRET", "").strip()
+    if secret:
+        return secret
+    if os.path.isfile(CONF_PATH):
+        with open(CONF_PATH, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line.startswith("MEDIA_SERVER_SECRET="):
+                    secret = line.split("=", 1)[1].strip()
+    return secret
+
+
+MEDIA_SECRET = load_media_secret()
 
 
 def init_db():
@@ -309,6 +327,8 @@ class Handler(BaseHTTPRequestHandler):
         self._json(404, {"message": "not found"})
 
     def do_POST(self):
+        if self.path == "/api/srs/hook":
+            return self.srs_hook()
         if self.path == "/api/admin/login":
             return self.admin_login()
         if self.path == "/api/login":
@@ -335,6 +355,27 @@ class Handler(BaseHTTPRequestHandler):
         return urllib.parse.unquote(self.path.rsplit("/", 1)[-1])
 
     # ---------- 业务 ----------
+    def srs_hook(self):
+        """SRS http_hooks 回调：P0 只校验推流密钥，播放暂不拦截。"""
+        # 只允许本机 SRS 直接回调；nginx 侧另有 deny 规则挡住外部访问
+        if self.client_address[0] not in ("127.0.0.1", "::1"):
+            return self._json(403, {"code": 403, "message": "forbidden"})
+        body = self._body()
+        if not isinstance(body, dict):
+            return self._json(400, {"code": 400, "message": "invalid json"})
+        if str(body.get("action") or "") != "on_publish":
+            return self._json(200, 0)
+        params = urllib.parse.parse_qs(str(body.get("param") or "").lstrip("?"))
+        supplied = (params.get("secret") or [""])[0]
+        if not MEDIA_SECRET:
+            self.log_message("SRS 拒绝推流：服务端未配置 MEDIA_SERVER_SECRET")
+            return self._json(403, {"code": 403, "message": "secret not configured"})
+        if not hmac.compare_digest(supplied.encode(), MEDIA_SECRET.encode()):
+            self.log_message("SRS 拒绝推流：app=%s stream=%s ip=%s",
+                             body.get("app"), body.get("stream"), body.get("ip"))
+            return self._json(403, {"code": 403, "message": "invalid secret"})
+        return self._json(200, 0)
+
     def _is_admin(self):
         auth = self.headers.get("Authorization", "")
         if not auth.startswith("Bearer "):

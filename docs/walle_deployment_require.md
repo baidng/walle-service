@@ -362,6 +362,11 @@ rtc_server {
 }
 
 vhost __defaultVhost__ {
+  # 推流鉴权：每次新推流回调本机 API，校验 URL 中的 ?secret=
+  http_hooks {
+    enabled on;
+    on_publish http://127.0.0.1:9000/api/srs/hook;
+  }
   http_remux {
     enabled on;
     mount [vhost]/[app]/[stream].flv;
@@ -450,6 +455,9 @@ http {
         index index.html;
 
         location / { try_files $uri $uri/ /index.html; }
+
+        # SRS 推流鉴权回调专用：只允许本机 SRS 直连 9000，禁止外部访问
+        location = /api/srs/hook { deny all; }
 
         location /api/ {
             proxy_pass http://127.0.0.1:9000;
@@ -657,7 +665,7 @@ echo $! > mqtt_demo.pid
 | 路径 | 作用 | 关键项 |
 |---|---|---|
 | `/etc/systemd/system/srs.service`（源文件 `etc/srs.service`） | SRS 服务 | `LimitNOFILE=10000`、`Restart=on-failure`、`User=gs` |
-| `/etc/walle/walle.conf`（源文件 `etc/walle.conf`） | 门户保密配置 | `EMQX_API_KEY`/`EMQX_API_SECRET`，权限 600 |
+| `/etc/walle/walle.conf`（源文件 `etc/walle.conf`） | 门户保密配置 | `EMQX_API_KEY`/`EMQX_API_SECRET`、`MEDIA_SERVER_SECRET`（与设备/App 一致），权限 600 |
 | `/etc/systemd/system/walle.service`（由 `scripts/walle.service` 安装） | 门户服务 | `Type=forking`、`EnvironmentFile`、8088 |
 | `/etc/emqx/emqx.conf` | EMQX 配置（deb 自带） | 默认 dashboard 账号、监听端口 |
 | `etc/srs.conf` | SRS 运行配置 | `max_connections 800`、8080/1985/9972、`rtc_server` |
