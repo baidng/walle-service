@@ -84,6 +84,13 @@
     border-radius: 6px; padding: 7px 10px; font-size: 13px; font-family: inherit;
   }
   .user-form input { width: 190px; }
+
+  .secret-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .secret-row input {
+    flex: 1 1 320px; min-width: 240px; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid var(--line); background: #0f1216; color: var(--text);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .5px;
+  }
   .btn { background: transparent; color: var(--text); border: 1px solid var(--line);
          border-radius: 6px; padding: 7px 14px; font-size: 13px; cursor: pointer; font-family: inherit; }
   .btn:hover { border-color: var(--accent); color: var(--accent); }
@@ -119,6 +126,7 @@
       <div class="menu-group-title"><span class="ico">📹</span>SRS<span class="arrow">▶</span></div>
       <div class="menu-children">
         <div class="menu-item" data-panel="srs-overview">概览</div>
+        <div class="menu-item" data-panel="srs-auth">流鉴权</div>
         <div class="menu-item" data-panel="srs-streams">流管理</div>
         <div class="menu-item" data-panel="srs-config">服务配置</div>
       </div>
@@ -228,6 +236,33 @@
     </div>
   </section>
 
+  <section class="panel" data-panel="srs-auth">
+    <h2>SRS · 流鉴权</h2>
+    <p class="lead">SRS 每次收到新推流都会回调门户校验密钥，不匹配的推流会被拒绝。修改后必须同步到设备端 <code>MEDIA_SERVER_SECRET</code> 与 App 的 <code>whipSecret</code>，否则设备无法推流。</p>
+    <div class="card">
+      <h3>推流密钥</h3>
+      <div class="secret-row">
+        <input id="stream-secret" type="password" autocomplete="off" spellcheck="false" />
+        <button class="logout" id="btn-secret-eye">显示</button>
+        <button class="logout" id="btn-secret-copy">复制</button>
+        <button class="logout" id="btn-secret-gen" style="color:var(--warn);border-color:#3a3011">重新生成</button>
+        <button class="logout" id="btn-secret-save" style="color:var(--accent2);border-color:#1f4a33">保存</button>
+      </div>
+      <p class="sub" id="secret-hint" style="margin-top:10px">加载中…</p>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h3>使用方式</h3>
+      <table>
+        <thead><tr><th>端</th><th>配置项</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>设备端</td><td><code>/etc/walle-ai.conf</code> 的 <code>MEDIA_SERVER_SECRET</code></td><td>RTMP 推流 / WHEP 拉音频</td></tr>
+          <tr><td>Android</td><td><code>gradle.properties</code> 的 <code>whipSecret</code></td><td>WHIP 推麦 / WHEP 拉画面</td></tr>
+          <tr><td>SRS</td><td><code>etc/srs.conf</code> 的 <code>on_publish</code></td><td>回调 <code>/api/srs/hook</code> 校验</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
   <section class="panel" data-panel="srs-streams">
     <h2>SRS · 流管理</h2>
     <p class="lead">与 SRS API <code>/api/v1/streams/</code> 实时同步。</p>
@@ -320,6 +355,7 @@ function showPanel(name) {
   if (el) { el.classList.add("active"); crumb.textContent = el.textContent.trim(); }
   if (name === "mqtt-users") loadUsers();
   if (name === "bindings") loadBindings();
+  if (name === "srs-auth") loadStreamSecret();
 }
 nav.querySelectorAll(".menu-item").forEach(i => i.addEventListener("click", () => showPanel(i.dataset.panel)));
 nav.querySelectorAll(".menu-group-title").forEach(t => t.addEventListener("click", () => {
@@ -600,6 +636,66 @@ async function fillStatic() {
   set("tz", Intl.DateTimeFormat().resolvedOptions().timeZone);
   set("rtc-candidate", "192.168.31.114 (见 srs.conf)");
 }
+
+// --- SRS 流鉴权密钥 ---
+let secretVisible = false;
+function secretInput() { return document.getElementById("stream-secret"); }
+function setSecretHint(msg, ok) {
+  const el = document.getElementById("secret-hint");
+  el.textContent = msg;
+  el.style.color = ok ? "var(--accent2)" : "var(--muted)";
+}
+async function loadStreamSecret() {
+  try {
+    const d = await apiJSON("/api/admin/stream-secret");
+    secretInput().value = d.secret || "";
+    setSecretHint("已加载当前密钥", true);
+  } catch (e) {
+    setSecretHint(e.message, false);
+  }
+}
+async function saveStreamSecret() {
+  try {
+    const d = await apiJSON("/api/admin/stream-secret", {
+      method: "PUT",
+      body: JSON.stringify({ secret: secretInput().value.trim() }),
+    });
+    secretInput().value = d.secret;
+    setSecretHint("已保存，新推流立即使用该密钥", true);
+  } catch (e) {
+    setSecretHint(e.message, false);
+  }
+}
+async function regenerateStreamSecret() {
+  if (!confirm("重新生成后，所有设备与 App 必须同步新密钥才能推流，确认继续？")) return;
+  try {
+    const d = await apiJSON("/api/admin/stream-secret/regenerate", { method: "POST" });
+    secretInput().value = d.secret;
+    setSecretHint("已生成新密钥，请同步到设备端与 App", true);
+  } catch (e) {
+    setSecretHint(e.message, false);
+  }
+}
+function toggleSecret() {
+  secretVisible = !secretVisible;
+  secretInput().type = secretVisible ? "text" : "password";
+  document.getElementById("btn-secret-eye").textContent = secretVisible ? "隐藏" : "显示";
+}
+async function copySecret() {
+  const v = secretInput().value;
+  if (!v) return;
+  try {
+    await navigator.clipboard.writeText(v);
+  } catch {
+    secretInput().select();
+    document.execCommand("copy");
+  }
+  setSecretHint("已复制到剪贴板", true);
+}
+document.getElementById("btn-secret-eye").addEventListener("click", toggleSecret);
+document.getElementById("btn-secret-copy").addEventListener("click", copySecret);
+document.getElementById("btn-secret-gen").addEventListener("click", regenerateStreamSecret);
+document.getElementById("btn-secret-save").addEventListener("click", saveStreamSecret);
 
 // 重启按钮（sudo systemctl，需用户确认；在真实部署中建议通过后端 BFF 执行而不是直接调用）
 function restartSrs() {

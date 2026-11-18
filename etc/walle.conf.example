@@ -11,5 +11,3 @@
 EMQX_API_KEY=<你的 api_key>
 EMQX_API_SECRET=<你的 api_secret>
 
-# SRS 推流鉴权密钥：必须与设备端 / App 的 MEDIA_SERVER_SECRET（whipSecret）一致
-MEDIA_SERVER_SECRET=<你的推流 secret>

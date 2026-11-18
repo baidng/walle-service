@@ -102,6 +102,22 @@ def load_media_secret():
 MEDIA_SECRET = load_media_secret()
 
 
+def get_media_secret():
+    """当前生效的推流密钥：以数据库为准，未写入时回退到启动配置。"""
+    with db() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key = 'media_secret'").fetchone()
+    return (row["value"] if row else "") or MEDIA_SECRET or ""
+
+
+def set_media_secret(value):
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO settings(key, value) VALUES ('media_secret', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (value,),
+        )
+
+
 def init_db():
     os.makedirs(DATA_DIR, exist_ok=True)
     with db() as conn:
@@ -119,6 +135,17 @@ def init_db():
                    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
                )"""
         )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS settings (
+                   key   TEXT PRIMARY KEY,
+                   value TEXT NOT NULL
+               )"""
+        )
+        if MEDIA_SECRET:
+            conn.execute(
+                "INSERT OR IGNORE INTO settings(key, value) VALUES ('media_secret', ?)",
+                (MEDIA_SECRET,),
+            )
 
 
 @contextlib.contextmanager
@@ -324,11 +351,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.list_users()
         if self.path == "/api/bindings":
             return self.list_bindings()
+        if self.path == "/api/admin/stream-secret":
+            return self.get_stream_secret()
         self._json(404, {"message": "not found"})
 
     def do_POST(self):
         if self.path == "/api/srs/hook":
             return self.srs_hook()
+        if self.path == "/api/admin/stream-secret/regenerate":
+            return self.regenerate_stream_secret()
         if self.path == "/api/admin/login":
             return self.admin_login()
         if self.path == "/api/login":
@@ -340,6 +371,8 @@ class Handler(BaseHTTPRequestHandler):
         self._json(404, {"message": "not found"})
 
     def do_PUT(self):
+        if self.path == "/api/admin/stream-secret":
+            return self.update_stream_secret()
         if self.path.startswith("/api/users/"):
             return self.update_user(self._username())
         self._json(404, {"message": "not found"})
@@ -367,14 +400,42 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, 0)
         params = urllib.parse.parse_qs(str(body.get("param") or "").lstrip("?"))
         supplied = (params.get("secret") or [""])[0]
-        if not MEDIA_SECRET:
+        current = get_media_secret()
+        if not current:
             self.log_message("SRS 拒绝推流：服务端未配置 MEDIA_SERVER_SECRET")
             return self._json(403, {"code": 403, "message": "secret not configured"})
-        if not hmac.compare_digest(supplied.encode(), MEDIA_SECRET.encode()):
+        if not hmac.compare_digest(supplied.encode(), current.encode()):
             self.log_message("SRS 拒绝推流：app=%s stream=%s ip=%s",
                              body.get("app"), body.get("stream"), body.get("ip"))
             return self._json(403, {"code": 403, "message": "invalid secret"})
         return self._json(200, 0)
+
+    # ---------- 流鉴权密钥 ----------
+    def get_stream_secret(self):
+        if not self._is_admin():
+            return self._deny()
+        return self._json(200, {"secret": get_media_secret()})
+
+    def update_stream_secret(self):
+        if not self._is_admin():
+            return self._deny()
+        body = self._body()
+        if not isinstance(body, dict):
+            return self._json(400, {"message": "请求体格式错误"})
+        value = str(body.get("secret") or "").strip()
+        if not 8 <= len(value) <= 128 or not all(
+            (c.isascii() and c.isalnum()) or c in "-_" for c in value
+        ):
+            return self._json(400, {"message": "密钥需为 8-128 位字母、数字、下划线或短横线"})
+        set_media_secret(value)
+        return self._json(200, {"secret": value})
+
+    def regenerate_stream_secret(self):
+        if not self._is_admin():
+            return self._deny()
+        value = secrets.token_hex(16)
+        set_media_secret(value)
+        return self._json(200, {"secret": value})
 
     def _is_admin(self):
         auth = self.headers.get("Authorization", "")
