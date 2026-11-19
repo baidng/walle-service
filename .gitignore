@@ -17,13 +17,12 @@ thirdparty/srs/
 .run/
 log/
 
-# 由 scripts/deploy.sh 渲染生成（含本机绝对路径）
-scripts/walle.service
 
 # 凭据（部署时本地生成，不入库）
 etc/emqx_api_key.json
 etc/nginx.conf
 etc/walle.conf
+etc/walle.service
 etc/srs.conf
 etc/srs.service
 
