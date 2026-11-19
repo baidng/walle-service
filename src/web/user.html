@@ -170,6 +170,7 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
 .alarmItem.critical .mark{background:var(--danger)}
 .alarmItem.info .mark{background:var(--accent2)}
 .alarmItem .txt{min-width:0;flex:1}
+.alarmItem .dev{font-size:13px;font-weight:600;color:var(--accent);margin-bottom:2px;word-break:break-word}
 .alarmItem b{display:block;font-size:12px;font-weight:550;color:var(--text);word-break:break-word}
 .alarmItem p{margin:3px 0 0;font-size:11px;color:var(--dim)}
 .alarmItem time{flex:none;font-size:10.5px;color:var(--dim);white-space:nowrap}
@@ -1286,7 +1287,7 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
   }
   function onAlarm(dev, data) {
     if (dev !== cfg.device) return;
-    var key = [data.event, data.metric, data.alarm_type, data.timestamp, data.message].join('|');
+    var key = [dev, data.event, data.metric, data.alarm_type, data.timestamp, data.message].join('|');
     if (ui.lastAlarm && ui.lastAlarm.key === key && Date.now() - ui.lastAlarm.at < 2000) return;
     ui.lastAlarm = { key: key, at: Date.now() };
     var empty = el.alarmList.querySelector('.emptyState');
@@ -1297,10 +1298,12 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
     var txt = document.createElement('div'); txt.className = 'txt';
     var title = document.createElement('b'); title.textContent = data.message || (data.event + ' · ' + (data.metric || ''));
     var sub = document.createElement('p');
+    var devName = data.hostname || (ui.devices[dev] && ui.devices[dev].hostname) || data.device_id || dev;
+    var devLine = document.createElement('div'); devLine.className = 'dev'; devLine.textContent = devName;
     sub.textContent = [data.event, data.level, data.metric, data.alarm_type].filter(Boolean).join(' · ');
     var time = document.createElement('time');
     time.textContent = data.datetime ? data.datetime.slice(11, 19) : nowTime();
-    txt.appendChild(title); txt.appendChild(sub);
+    txt.appendChild(devLine); txt.appendChild(title); txt.appendChild(sub);
     item.appendChild(mark); item.appendChild(txt); item.appendChild(time);
     el.alarmList.insertBefore(item, el.alarmList.firstChild);
     while (el.alarmList.children.length > 200) el.alarmList.removeChild(el.alarmList.lastChild);
