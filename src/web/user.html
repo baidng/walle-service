@@ -194,6 +194,7 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
 .alarmPager button:disabled{opacity:.4;cursor:not-allowed}
 .alarmPager .dots{color:var(--dim);font-size:11px;padding:0 2px}
 .alarmItem{display:flex;gap:10px;padding:10px 11px;border-radius:11px;border:1px solid var(--line);background:rgba(255,255,255,.022)}
+.alarmItem.unread{cursor:pointer}
 .alarmItem .mark{width:3px;border-radius:4px;background:var(--dim);flex:none}
 .alarmItem.warning .mark{background:var(--warn)}
 .alarmItem.critical .mark{background:var(--danger)}
@@ -203,6 +204,11 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
 .alarmItem b{display:block;font-size:12px;font-weight:550;color:var(--text);word-break:break-word}
 .alarmItem p{margin:3px 0 0;font-size:11px;color:var(--dim)}
 .alarmItem time{flex:none;font-size:10.5px;color:var(--dim);white-space:nowrap}
+.alarmItem .unreadDot{width:7px;height:7px;border-radius:50%;flex:none;align-self:center;
+  background:var(--danger);box-shadow:0 0 6px rgba(255,107,107,.8)}
+.alarmUnreadBar{display:flex;justify-content:flex-end;margin:-4px 0 10px}
+.alarmUnreadBar .btn{color:var(--dim)}
+.alarmUnreadBar .btn:not(:disabled){color:var(--muted)}
 .carBody{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:24px;align-items:center}
 /* 车辆控制：横向排布（键盘左、状态/说明右），压缩卡片高度 */
 .carHalf{min-width:0;display:grid;grid-template-columns:auto minmax(0,1fr);grid-template-rows:auto auto;gap:4px 16px;align-items:center}
@@ -328,6 +334,8 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
 }
 .sideNavItem .navIcon{width:22px;text-align:center;font-size:15px;opacity:.75}
 .sideNavItem.active .navIcon{opacity:1;color:var(--accent)}
+.sideNavItem .navDot{width:7px;height:7px;border-radius:50%;flex:none;margin-left:auto;
+  background:var(--danger);box-shadow:0 0 6px rgba(255,107,107,.8)}
 .mainArea{flex:1;min-width:0;padding:18px 18px 18px 20px;overflow-x:hidden}
 .tabPanel{display:none;animation:fadeIn .18s ease}
 .tabPanel.active{display:block}
@@ -405,6 +413,7 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
         </button>
         <button class="sideNavItem" data-tab="alarm">
           <span class="navIcon">⚠</span><span>告警信息</span>
+          <span id="navAlarmDot" class="navDot hide" title="有未读告警"></span>
         </button>
       </nav>
     </aside>
@@ -604,6 +613,10 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
         <button class="alarmTab active" data-alarm-tab="live">当前</button>
         <button class="alarmTab" data-alarm-tab="history">历史</button>
       </div>
+      <div id="alarmUnreadBar" class="alarmUnreadBar">
+        <button id="btnAlarmReadAll" class="btn" style="height:29px;font-size:11.5px"
+          title="清除所有未读告警标记" disabled>全部已读</button>
+      </div>
       <div id="alarmFilter" class="alarmTools hide">
         <select id="alarmDeviceSel" title="按设备过滤">
           <option value="">全部设备</option>
@@ -703,6 +716,7 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
    'btnMic', 'voiceCard', 'micMeterFill',
    'videoMsg', 'alarmList', 'alarmFilter', 'alarmPager', 'alarmDeviceSel',
    'alarmFrom', 'alarmTo', 'alarmMeta', 'btnAlarmQuery', 'btnAlarmClear',
+   'navAlarmDot', 'alarmUnreadBar', 'btnAlarmReadAll',
    'carStatus', 'servoStatus', 'servoEnable',
    'userName', 'btnLogout',
    'recordBadge', 'recordActive', 'recFilename', 'recStartedAt', 'recDuration',
@@ -1376,6 +1390,21 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
     if (when) item.title = when + (row.device ? ' · ' + row.device : '');
     txt.appendChild(devLine); txt.appendChild(title); txt.appendChild(sub);
     item.appendChild(mark); item.appendChild(txt); item.appendChild(time);
+    var dot = null;
+    if (row.unread) {
+      item.classList.add('unread');
+      dot = document.createElement('span');
+      dot.className = 'unreadDot';
+      dot.title = '未读';
+      item.appendChild(dot);
+    }
+    item.addEventListener('click', function () {
+      if (!row.unread) return;
+      row.unread = false;
+      item.classList.remove('unread');
+      if (dot && dot.parentNode) dot.parentNode.removeChild(dot);
+      updateUnreadUi();
+    });
     return item;
   }
   function alarmEmpty(text) {
@@ -1387,12 +1416,26 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
     el.alarmPager.innerHTML = '';
   }
   function setAlarmMeta(text) { el.alarmMeta.textContent = text; }
+  function hasUnreadAlarm() {
+    return ui.alarm.live.some(function (row) { return !!row.unread; });
+  }
+  function updateUnreadUi() {
+    var unread = hasUnreadAlarm();
+    el.navAlarmDot.classList.toggle('hide', !unread);
+    el.btnAlarmReadAll.disabled = !unread;
+  }
+  function markAllAlarmsRead() {
+    ui.alarm.live.forEach(function (row) { row.unread = false; });
+    if (ui.alarm.tab === 'live') renderLiveAlarms();
+    updateUnreadUi();
+  }
   function setAlarmTab(name) {
     ui.alarm.tab = name === 'history' ? 'history' : 'live';
     Array.prototype.forEach.call(document.querySelectorAll('.alarmTab'), function (btn) {
       btn.classList.toggle('active', btn.getAttribute('data-alarm-tab') === ui.alarm.tab);
     });
     el.alarmFilter.classList.toggle('hide', ui.alarm.tab !== 'history');
+    el.alarmUnreadBar.classList.toggle('hide', ui.alarm.tab !== 'live');
     if (ui.alarm.tab === 'live') renderLiveAlarms();
     else if (!ui.alarm.history.loaded) queryAlarms(1);
     else renderHistoryPage();
@@ -1424,6 +1467,7 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
     setAlarmMeta('实时接收中 · 共 ' + rows.length + ' 条' +
       (pages > 1 ? ' · 第 ' + page + '/' + pages + ' 页' : ''));
     renderLivePager(pages, page);
+    updateUnreadUi();
   }
   function renderHistoryPager() {
     var h = ui.alarm.history;
@@ -1554,10 +1598,12 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
       metric: data.metric,
       alarm_type: data.alarm_type,
       message: data.message,
-      occurred_text: data.datetime || ''
+      occurred_text: data.datetime || '',
+      unread: true
     };
     ui.alarm.live.unshift(row);
     while (ui.alarm.live.length > 300) ui.alarm.live.pop();
+    updateUnreadUi();
     if (ui.alarm.tab === 'live' && ui.alarm.livePage === 1) renderLiveAlarms();
     else if (ui.alarm.tab === 'live') {
       setAlarmMeta('实时接收中 · 共 ' + ui.alarm.live.length + ' 条（新告警在第 1 页）');
@@ -2705,6 +2751,8 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
     syncAlarmTimeDash(input);
   });
   el.btnAlarmClear.addEventListener('click', clearAlarmTime);
+  el.btnAlarmReadAll.addEventListener('click', markAllAlarmsRead);
+  updateUnreadUi();
   el.btnAlarmQuery.addEventListener('click', function () {
     ui.alarm.history.loaded = false;
     queryAlarms(1);
