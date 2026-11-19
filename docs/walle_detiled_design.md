@@ -66,6 +66,59 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 4. **登录态**：token 仅存 `sessionStorage`，关闭标签页即失效；服务端会话保存在 `walle_api.py` 内存中，进程重启即失效。
 5. **告警旁路落库**：EMQX 规则引擎订阅告警主题，通过回环 HTTP 把消息交给 `walle_api.py`，不改变设备原有的 MQTT 发布/订阅链路；规则或 API 故障只影响历史留档，不影响实时告警显示。
 
+
+### 2.1 目录规划
+
+
+```text
+<仓库根目录>/walle-service/
+├── docs/                              # 文档，部署不需要
+│   ├── walle_deployment_require.md    # 本文（部署文档）
+│   ├── walle_detiled_design.md        # 架构、登录、MQTT、控制台设计
+│   ├── deployment_report.md           # 首次部署验证报告
+│   ├── MVP_verification_report.md
+│   ├── EMQX_SRS_VM_recon_report.md
+│   ├── version_record.md
+│   ├── screenshots/                   # 验证截图
+│   └── samples/                       # 接口返回样例
+├── etc/                               # 运行期配置
+│   ├── nginx.conf.example             # 门户反代模板（入库）
+│   ├── nginx.conf                     # 由模板复制并填真实 Key（不入库）
+│   ├── srs.conf                       # SRS 运行配置（被 srs.service 引用）
+│   ├── srs.service                    # SRS 的 systemd 单元源文件
+│   ├── walle.conf.example             # 门户保密配置模板（入库）
+│   ├── walle.conf                     # 真实密钥，权限 600（不入库）
+│   └── emqx_api_key.json              # EMQX API Key（不入库）
+├── scripts/
+│   ├── start-walle.sh                 # 门户启动/状态脚本
+│   ├── stop-walle.sh                  # 门户手动停止脚本
+│   ├── deploy.sh                      # 部署脚本：校验 walle.conf → 渲染 walle.service → 安装到系统目录
+│   ├── walle.service.example          # systemd 单元模板（入库）
+│   └── walle.service                  # 渲染产物，绝对路径随机器而定（不入库）
+├── src/
+│   ├── web/                           # 门户页面：index/home/admin/user/dashboard.html
+│   └── backend/                       # 后端：walle_api.py（用户管理 API）、mqtt_demo_client.py
+│       └── data/users.db              # 用户角色库（SQLite，运行后自动生成，不入库）
+├── tests/                             # 测试
+├── thirdparty/
+│   └── srs/                           # SRS 源码（v7.0-a4，约 460MB，不入库，按 7.1 自行 clone）
+│       └── trunk/objs/srs             # 编译产物
+├── log/                               # 门户日志（access.log/error.log，已 gitignore）
+├── .run/nginx/                        # nginx pid 与临时文件（nginx.pid、temp/，已 gitignore）
+├── README.md                          # 系统简介（面向用户）
+└── LICENSE
+```
+
+说明：
+
+- `docs/` 仅存放文档、验证报告、截图和接口样例，供查阅/审计，**部署不需要**，可整体删除。
+- `thirdparty/srs/` 是 SRS 官方源码仓库，含 `.git`、体量大，因此不做版本管理；SRS 运行配置独立放在 `etc/srs.conf`，避免随源码目录一起被忽略。
+- 门户日志写入仓库根的 `log/`（`access.log`、`error.log`），pid 与临时文件在 `.run/nginx/`，两者均已加入 `.gitignore`。
+- EMQX 安装在系统目录（`/etc/emqx`、`/var/lib/emqx`），SRS 的 systemd 单元安装到 `/etc/systemd/system/srs.service`；这两处不在本仓库内。
+- 安装用的 EMQX `.deb` 已在清理时删除，部署时按 6.1 的 URL 重新下载即可。
+
+
+
 ---
 
 ## 3. 端口与对外暴露

@@ -52,87 +52,66 @@ Nginx（独立实例，由 walle.service 托管或手动启动）
 
 ---
 
-## 3. 目录规划
 
-```text
-<仓库根目录>/walle-service/
-├── docs/                              # 文档，部署不需要
-│   ├── walle_deployment_require.md    # 本文（部署文档）
-│   ├── walle_detiled_design.md        # 架构、登录、MQTT、控制台设计
-│   ├── deployment_report.md           # 首次部署验证报告
-│   ├── MVP_verification_report.md
-│   ├── EMQX_SRS_VM_recon_report.md
-│   ├── version_record.md
-│   ├── screenshots/                   # 验证截图
-│   └── samples/                       # 接口返回样例
-├── etc/                               # 运行期配置
-│   ├── nginx.conf.example             # 门户反代模板（入库）
-│   ├── nginx.conf                     # 由模板复制并填真实 Key（不入库）
-│   ├── srs.conf                       # SRS 运行配置（被 srs.service 引用）
-│   ├── srs.service                    # SRS 的 systemd 单元源文件
-│   ├── walle.conf.example             # 门户保密配置模板（入库）
-│   ├── walle.conf                     # 真实密钥，权限 600（不入库）
-│   └── emqx_api_key.json              # EMQX API Key（不入库）
-├── scripts/
-│   ├── start-walle.sh                 # 门户启动/状态脚本
-│   ├── stop-walle.sh                  # 门户手动停止脚本
-│   ├── deploy.sh                      # 部署脚本：校验 walle.conf → 渲染 walle.service → 安装到系统目录
-│   ├── walle.service.example          # systemd 单元模板（入库）
-│   └── walle.service                  # 渲染产物，绝对路径随机器而定（不入库）
-├── src/
-│   ├── web/                           # 门户页面：index/home/admin/user/dashboard.html
-│   └── backend/                       # 后端：walle_api.py（用户管理 API）、mqtt_demo_client.py
-│       └── data/users.db              # 用户角色库（SQLite，运行后自动生成，不入库）
-├── tests/                             # 测试
-├── thirdparty/
-│   └── srs/                           # SRS 源码（v7.0-a4，约 460MB，不入库，按 7.1 自行 clone）
-│       └── trunk/objs/srs             # 编译产物
-├── log/                               # 门户日志（access.log/error.log，已 gitignore）
-├── .run/nginx/                        # nginx pid 与临时文件（nginx.pid、temp/，已 gitignore）
-├── README.md                          # 系统简介（面向用户）
-└── LICENSE
-```
 
-说明：
+## 3. 系统依赖
 
-- `docs/` 仅存放文档、验证报告、截图和接口样例，供查阅/审计，**部署不需要**，可整体删除。
-- `thirdparty/srs/` 是 SRS 官方源码仓库，含 `.git`、体量大，因此不做版本管理；SRS 运行配置独立放在 `etc/srs.conf`，避免随源码目录一起被忽略。
-- 门户日志写入仓库根的 `log/`（`access.log`、`error.log`），pid 与临时文件在 `.run/nginx/`，两者均已加入 `.gitignore`。
-- EMQX 安装在系统目录（`/etc/emqx`、`/var/lib/emqx`），SRS 的 systemd 单元安装到 `/etc/systemd/system/srs.service`；这两处不在本仓库内。
-- 安装用的 EMQX `.deb` 已在清理时删除，部署时按 6.1 的 URL 重新下载即可。
-
----
-
-## 5. 系统依赖
+执行下面的命令，安装系统依赖：
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
-  curl jq git nginx build-essential pkg-config libssl-dev zlib1g-dev \
+  curl jq git build-essential pkg-config libssl-dev zlib1g-dev \
   automake cmake tcl ffmpeg certbot
 ```
 
-实测版本（Ubuntu 24.04 arm64）：
 
-| 包 | 版本 |
-|---|---|
-| curl | 8.5.0-2ubuntu10.16 |
-| jq | 1.7.1-3ubuntu0.24.04.2 |
-| git | 1:2.43.0-1ubuntu7.4 |
-| nginx / nginx-common | 1.24.0-2ubuntu7.19 |
-| build-essential | 12.10ubuntu1 |
-| pkg-config | 1.8.1-2build1 |
-| libssl-dev | 3.0.13-0ubuntu3.16 |
-| zlib1g-dev | 1:1.3.dfsg-3.1ubuntu2.3 |
-| automake | 1:1.16.5-1.3ubuntu1 |
-| cmake | 3.28.3-1build7 |
-| tcl | 8.6.14build1 |
-| ffmpeg | 7:6.1.1-3ubuntu5 |
-| certbot | 1.9.0 |
+---
+
+
+## 4. 安装 Nginx
+
+安装命令：
+```bash
+sudo apt install -y nginx
+```
+
+
+---
+
+
+## 5. 安装 SRS 
+
+SRS 没有官方 apt 源/`.deb` 包，因此要自己下载源码，并编译。
+
+### 5.1 编译
+
+```bash
+cd <仓库根目录>/thirdparty
+
+git clone --depth 1 --branch v7.0-a4 https://github.com/ossrs/srs.git 
+
+cd srs/trunk
+# 配置：
+./configure --srt=on
+# 编译：
+make -j8
+#产物：trunk/objs/srs = 30M；trunk/objs = 318M
+
+# 查看版本号：
+./objs/srs -V
+```
+
+### 5.2 安装
+
+SRS 编译产物是“可执行文件 + 静态资源”的自包含应用，不是共享库，不涉及`ldconfig` ，因此不需要使用类似“ make install ”的安装命令。
+也就是说，SRS的编译产物就放在当前仓库的目录下，在使用的时候，加上绝对路径即可，到此，srs的安装已完成。
 
 ---
 
 ## 6. EMQX Enterprise 6.3.2
+
+官方只提供了 EMQX 的 `.deb` 包，示例以 arm64 为例，实际使用要选择对应的架构包。
 
 ### 6.1 下载与校验
 
@@ -152,13 +131,24 @@ echo "ea5252d8f3979ecef714ee1d570558c6f07bad61d18d55d8ebd989243790d717  emqx-ent
 ```bash
 cd /tmp/emqx-deb
 sudo apt install -y ./emqx-enterprise-6.3.2-ubuntu24.04-arm64.deb
-sudo systemctl enable --now emqx
+
+# 设置 emqx 服务开机自启
+sudo systemctl enable emqx
+
+# 启动 emqx
+sudo systemctl start emqx
+
+# 查看 emqx 服务状态
 systemctl status emqx --no-pager
+
+# 查看 emqx 服务端口
 ss -ltn | grep -E ':(18083|1883|8883|8083|8084)\b'
+
+# 测试 emqx 服务是否启动成功
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18083/
 ```
 
-> 注意：deb 的 postinst 只 `enable`，不会自动 `start`，必须显式启动。
+> 注意：EMQX 的 deb包，安装完成后，只做了`systemctl enable emqx` ，没做`start`，因此要手动启动。
 
 ### 6.3 登录，并修改默认密码
 
@@ -166,7 +156,37 @@ EMQX服务启动成功后，就可以登录EMQX的控制面板（Dashboard：`ht
 默认账号 `admin` / `public`（首次部署后请立即修改）。
 
 
-### 6.4 获取 API Key
+
+
+---
+
+## 7. 生成对应的 conf 配置文件和 systemd 服务文件
+
+前序工作已经准备完成，剩下的工作就是，生成对应的 conf 文件和 service 文件，然后部署到系统中，最后启动服务。
+
+### 7.1 使用脚本自动生成
+
+```bash
+cd <仓库根目录>/scripts
+
+# 执行脚本，生成 conf 文件和 service 文件
+./auto_gen_conf_service.sh
+
+```
+
+`auto_gen_conf_service.sh` 脚本的作用：
+- 1. 检查 srs，nginx，EMQX是否都安装了，其中nginx，EMQX可以通过判断库中有没有这个对应的包来判断，判断 srs 的时候，输出一个对话框，问用户是否安装了srs，给用户选择y/n，选择y继续，选择n，则提示用户安装srs（参考md文档），并退出。
+- 2. 根据 srs.conf.example 和 srs.service.example 生成对应的 srs.conf 和 srs.service 文件，其中生成 srs.conf文件时，提示用户输入公网ip地址，如果不输入，则使用默认探测。
+- 3. 根据 nginx.conf.example  生成 nginx.conf， 生成的过程中，需要使用到 EMQX的 `api_key` / `api_secret`，此时，判断emqx是否启动，如果没有启动，则提示用户启动 emqx，如果启动了，让用户输入 admin 的密码，默认密码是pubilc，然后通过脚本自动获取到  EMQX的 `api_key` / `api_secret`，并自动生成 `<BASE64(api_key:api_secret)>` ，最终生成 nginx.conf 文件。
+- 4. 根据walle.conf.example 和 walle.service.example 生成对应的  walle.conf 和 walle.service 文件，其中 walle.conf  中的 EMQX_API_KEY 和  EMQX_API_SECRET 与第3部的一样。
+
+
+
+### 7.2 手动修改文件
+
+如果不使用上面的脚本自动生成，也可以使用下面的命令配置。
+
+#### 7.2.1 获取 API Key
 
 获取 EMQX的 API Key ，主要用于 Nginx 方向 和 walle 后端调用。
 
@@ -175,157 +195,79 @@ EMQX服务启动成功后，就可以登录EMQX的控制面板（Dashboard：`ht
 2. 把新生成的 `api_key` / `api_secret` 保存下来，后面配置Nginx和walle网站会使用到。
 
 
-### 6.5 创建内置数据库认证器（必须）
+#### 7.2.2  生成 `etc/nginx.conf` 文件
 
-walle 后端通过 EMQX 内置数据库管理 MQTT 用户（`src/backend/walle_api.py` 中 `AUTH_ID = "password_based:built_in_database"`）。全新安装的 EMQX 没有该认证器，**必须先创建**，否则门户「用户管理」会报 `Authenticator not found in the 'global' scope'`。
-
-```bash
-KEY=$(jq -r .api_key etc/emqx_api_key.json)
-SECRET=$(jq -r .api_secret etc/emqx_api_key.json)
-
-curl -s -X POST -u "$KEY:$SECRET" http://127.0.0.1:18083/api/v5/authentication \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "mechanism": "password_based",
-    "backend": "built_in_database",
-    "user_id_type": "username",
-    "password_hash_algorithm": {
-      "name": "sha256",
-      "salt_position": "suffix"
-    }
-  }' | jq .
-```
-
-参数说明：
-
-- `mechanism` / `backend`：`password_based` + `built_in_database`，与后端 `AUTH_ID` 对应。
-- `user_id_type`: `username`，用户以用户名（而非 clientid）登录。
-- `password_hash_algorithm`：`sha256` + `suffix`（密码哈希加盐方式，盐追加在密码后），与后端创建用户时的加盐逻辑一致。
-
-验证（返回空列表即正常，NOT_FOUND 说明认证器未创建）：
+仓库已提供模板 `etc/nginx.conf.example`（入库），复制后**只需把 `/emqx-api/` location 中的 `<BASE64(api_key:api_secret)>` 占位符替换为真实值**：
 
 ```bash
-curl -s -u "$KEY:$SECRET" \
-  "http://127.0.0.1:18083/api/v5/authentication/password_based:built_in_database/users?limit=10" \
-  | jq .
+cp etc/nginx.conf.example etc/nginx.conf
 ```
 
-> 也可在 Dashboard 操作：访问控制 → 客户端认证 → 创建 → 认证方式「密码认证」、数据源「内置数据库」、用户 ID 类型「username」、密码哈希算法选择 `sha256`、盐位置 `suffix`。
+修改 `etc/nginx.conf` 第 67 行（`/emqx-api/` location）：
 
-### 6.6 License 说明
+```nginx
+# 修改前：
+    proxy_set_header Authorization "Basic <BASE64(api_key:api_secret)>";
 
-未安装 license 时服务可正常启动，内置开发/社区授权：
-
-```json
-{"type":"community","max_connections":10000000,"max_sessions":10000000,
- "customer":"Developer","deployment":"Development","expiry":false,
- "expiry_at":"2029-03-01"}
+# 修改后（把占位符替换为实际生成的 base64 值）：
+    proxy_set_header Authorization "Basic <base64 编码后的 api_key:api_secret>";
 ```
 
-`/api/v5/nodes` 返回 `edition: Enterprise`。生产环境需替换为正式 license。
-
-### 6.7 配置告警落库规则（必须）
-
-告警历史依赖 EMQX 规则引擎把 `walle/{tenant}/{device}/v1/alarm` 回调给 `walle_api.py`。先在 `etc/walle.conf` 中配置共享 token（与 8.2 节一起完成）：
+> 注意，这里不是简单的拷贝复制，生成 `<BASE64(api_key:api_secret)>` 的规则如下：（需要使用 7.2.1 节获取到的 API Key 和 API Secret）：
 
 ```bash
-TOKEN=$(python3 -c "import secrets; print(secrets.token_hex(24))")
-grep -q '^WALLE_INGEST_TOKEN=' etc/walle.conf \
-  && sed -i "s|^WALLE_INGEST_TOKEN=.*|WALLE_INGEST_TOKEN=$TOKEN|" etc/walle.conf \
-  || printf '\nWALLE_INGEST_TOKEN=%s\n' "$TOKEN" >> etc/walle.conf
-chmod 600 etc/walle.conf
+KEY=<7.2.1 节获取到的 API Key>
+SECRET=<7.2.1 节获取到的 API Secret>
+BASIC=$(printf '%s:%s' "$KEY" "$SECRET" | base64 -w0)
+echo "生成的 Basic 值: $BASIC"
+
+# 把 etc/nginx.conf 中 <BASE64(api_key:api_secret)> 替换为真实值
+sed -i "s|<BASE64(api_key:api_secret)>|$BASIC|" etc/nginx.conf
+
+# 验证替换成功（应输出带真实 base64 的整行，不再含 <BASE64...>）
+grep -n 'Authorization "Basic' etc/nginx.conf
 ```
 
-然后创建 Connector、Action、Rule（EMQX 6.3.2 的 REST 接口）：
+验证 EMQX API 调用正常：
 
 ```bash
-KEY=$(jq -r .api_key etc/emqx_api_key.json)
-SECRET=$(jq -r .api_secret etc/emqx_api_key.json)
-TOKEN=$(grep -E '^WALLE_INGEST_TOKEN=' etc/walle.conf | cut -d= -f2-)
-
-# 1) HTTP Connector：回环地址 + 接入 token
-curl -s -X POST -u "$KEY:$SECRET" http://127.0.0.1:18083/api/v5/connectors \
-  -H 'Content-Type: application/json' -d "{
-    \"type\": \"http\",
-    \"name\": \"walle_alarm_http\",
-    \"url\": \"http://127.0.0.1:9000\",
-    \"pool_size\": 4,
-    \"headers\": {
-      \"content-type\": \"application/json\",
-      \"x-walle-ingest\": \"$TOKEN\"
-    }
-  }" | jq .
-
-# 2) HTTP Action：POST /api/internal/alarms
-curl -s -X POST -u "$KEY:$SECRET" http://127.0.0.1:18083/api/v5/actions \
-  -H 'Content-Type: application/json' -d "$(jq -n --arg token "$TOKEN" '{
-    type: "http",
-    name: "walle_alarm_hook",
-    connector: "walle_alarm_http",
-    parameters: {
-      path: "/api/internal/alarms",
-      method: "post",
-      headers: { "content-type": "application/json", "x-walle-ingest": $token },
-      body: "{\"topic\":\"${topic}\",\"payload\":${payload}}"
-    },
-    resource_opts: { request_ttl: "10s" }
-  }')" | jq .
-
-# 3) Rule：订阅所有租户/设备的告警主题
-curl -s -X POST -u "$KEY:$SECRET" http://127.0.0.1:18083/api/v5/rules \
-  -H 'Content-Type: application/json' -d '{
-    "id": "walle_alarm_persist",
-    "sql": "SELECT topic, payload FROM \"walle/+/+/v1/alarm\"",
-    "actions": ["http:walle_alarm_hook"],
-    "enable": true,
-    "description": "walle 告警落库：转发到 walle_api"
-  }' | jq .
+curl -s -u "$KEY:$SECRET" 'http://127.0.0.1:18083/api/v5/nodes' | jq -c '[.[]|{node,edition,node_status}]'
+# 期望：[{"node":"emqx@127.0.0.1","edition":"Enterprise","node_status":"running"}]
 ```
 
-> 也可在 Dashboard 操作：集成 → 连接器（HTTP）→ 动作（HTTP）→ 规则。Action 的 body 模板必须是
-> `{"topic":"${topic}","payload":${payload}}`，否则后端无法解析。
+#### 7.2.3  生成 `etc/walle.conf` 文件
 
-验证：
-
-1. `curl -s -u "$KEY:$SECRET" http://127.0.0.1:18083/api/v5/rules/walle_alarm_persist | jq .` 返回规则且 `enable=true`。
-2. 发布一条测试告警：
-   ```bash
-   curl -s -X POST -u "$KEY:$SECRET" http://127.0.0.1:18083/api/v5/publish \
-     -H 'Content-Type: application/json' \
-     -d '{"topic":"walle/<客户用户名>/<设备用户名>/v1/alarm",
-          "payload":"{\"event\":\"test\",\"level\":\"info\",\"message\":\"部署验证\"}",
-          "qos":1}' | jq .
-   ```
-3. `log/walle-api.log` 出现 `POST /api/internal/alarms 200`，登录客户控制台可在「告警信息」中查到该记录。
-4. 若返回 403，检查 Action/Connector 的 `x-walle-ingest` 与 `etc/walle.conf` 是否一致；若返回 503，说明后端未配置 `WALLE_INGEST_TOKEN`。
-
----
-
-## 7. SRS 7.0.215
-
-### 7.1 编译
+仓库已提供模板 `etc/walle.conf.example`（入库），复制后将占位符替换为 7.2.1 节获取到的 API Key 和 API Secret：
 
 ```bash
-cd <仓库根目录>
+cp etc/walle.conf.example etc/walle.conf
 
-git clone --depth 1 --branch v7.0-a4 https://github.com/ossrs/srs.git \
-  thirdparty/srs
-
-cd thirdparty/srs/trunk
-./configure --srt=on
-make -j"$(nproc)"
-./objs/srs -v
+vi etc/walle.conf
 ```
 
-产物：
+必填项：
 
-```text
-trunk/objs/srs                 约 30MB
-trunk/objs/                    约 318MB（含 console/players）
-trunk/objs/nginx/html/console  原生控制台
+| 键 | 说明 |
+|---|---|
+| `EMQX_API_KEY` / `EMQX_API_SECRET` | 7.2.1 节创建的 API Key |
+| `WALLE_INGEST_TOKEN` | EMQX 规则引擎回调 walle_api 的共享 token，见 6.7 节；缺失时告警接入返回 503 |
+| `WALLE_ALARM_RETENTION_DAYS` | 可选，告警保留天数，默认 30 |
+
+> 说明：`etc/walle.conf`和`etc/nginx.conf`使用的 API Key 和 API Secret 可以不一样，可以在生成两套 API Key 和 API Secret 后，分别用于门户和 Nginx，比如 Nginx 的权限底一些，门户的权限高一些。这里使用一套。
+
+#### 7.2.4  生成 `etc/walle.service` 文件
+
+仓库已提供模板 `etc/walle.service.example`（入库），复制后**改 4 个字段**（用户名 + 仓库路径）：
+
+```bash
+cp etc/walle.service.example etc/walle.service
+
+vi etc/walle.service
 ```
 
-### 7.2 配置 `etc/srs.conf`
+将占位符：__REPO_ROOT__（仓库绝对路径）、__USER__、__GROUP__（服务运行用户）替换为你的实际用户与仓库路径。
+
+#### 7.2.5  生成 `etc/srs.conf` 文件
 
 仓库已提供模板 `etc/srs.conf.example`（入库），首次部署复制后**只需改 WebRTC 候选地址一行**：
 
@@ -349,17 +291,9 @@ rtc_server {
 ```
 
 - 云主机 / NAT 环境**必须填公网 IP**，否则 SDP answer 携带错误地址，公网浏览器 ICE 无法连通，WebRTC（WHEP/WHIP、`/players/rtc_player.html`）黑屏超时；HTTP-FLV、HLS、RTMP 推流不受影响。
-- 安全组放行 **UDP 8000**；本配置启用了 `rtc_server.tcp`，**TCP 8000** 也要放行（若只用 UDP，把 `tcp { enabled on; }` 改为 `off`）。
-- `exporter.label` / `exporter.tag` 为部署环境标识，非必须，多环境时改成可区分名字。
 
-换机器检查：
 
-```bash
-grep -nE 'candidate|listen 8000' etc/srs.conf
-curl -s https://ifconfig.me; echo   # 确认公网出口 IP / EIP
-```
-
-### 7.3 修改 `etc/srs.service`
+#### 7.2.6  生成 `etc/srs.service` 文件
 
 仓库已提供模板 `etc/srs.service.example`（入库），复制后**改 4 个字段**（用户名 + 仓库路径）：
 
@@ -377,150 +311,133 @@ WorkingDirectory=<仓库路径>/thirdparty/srs/trunk
 ExecStart=<仓库路径>/thirdparty/srs/trunk/objs/srs -c <仓库路径>/etc/srs.conf
 ```
 
-> `User` 不存在时 systemd 启动会报 `status=217/USER`。`max_connections` 必须小于 `LimitNOFILE`（本配置 800 / 10000）。
-
-### 7.4 安装运行
-
-```bash
-sudo install -m 0644 etc/srs.service /etc/systemd/system/srs.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now srs
-systemctl status srs --no-pager
-```
-
-### 7.5 验证
-
-```bash
-curl http://127.0.0.1:1985/api/v1/streams/
-```
+将上面的 <你的用户名> <仓库路径> 替换为你的实际用户与仓库路径。
 
 ---
 
-## 8. 门户 Nginx（8088）
+## 8. 部署并启动服务
 
-### 8.1 配置 `etc/nginx.conf`
 
-仓库已提供模板 `etc/nginx.conf.example`（入库），复制后**只需把 `/emqx-api/` location 中的 `<BASE64(api_key:api_secret)>` 占位符替换为真实值**：
+## 8.1 部署
 
-```bash
-cp etc/nginx.conf.example etc/nginx.conf
-```
-
-修改 `etc/nginx.conf` 第 67 行（`/emqx-api/` location）：
-
-```nginx
-# 修改前：
-    proxy_set_header Authorization "Basic <BASE64(api_key:api_secret)>";
-
-# 修改后（把占位符替换为实际生成的 base64 值）：
-    proxy_set_header Authorization "Basic <base64 编码后的 api_key:api_secret>";
-```
-
-> 注意，这里不是简单的拷贝复制，生成 `<BASE64(api_key:api_secret)>` 的规则如下：（需要使用 6.4 节获取到的 API Key 和 API Secret）：
+使用脚本部署
 
 ```bash
-KEY=<6.4 节获取到的 API Key>
-SECRET=<6.4 节获取到的 API Secret>
-BASIC=$(printf '%s:%s' "$KEY" "$SECRET" | base64 -w0)
-echo "生成的 Basic 值: $BASIC"
+cd <仓库根目录>/scripts
 
-# 把 etc/nginx.conf 中 <BASE64(api_key:api_secret)> 替换为真实值
-sed -i "s|<BASE64(api_key:api_secret)>|$BASIC|" etc/nginx.conf
+./deploy.sh
 
-# 验证替换成功（应输出带真实 base64 的整行，不再含 <BASE64...>）
-grep -n 'Authorization "Basic' etc/nginx.conf
 ```
 
+脚本 deploy.sh 的作用：
 
-验证 EMQX API 调用正常：
+- 1. 检查etc/srs.conf、etc/srs.service是否存在，
+- 2. 检查etc/nginx.conf 是否存在，
+- 3. 检查 etc/walle.conf， etc/walle.service是否存在，
+- 4. 将这些文件 拷贝到对应的目录中（`etc/srs.conf` 、`etc/nginx.conf`不拷贝）。
+- 5. 给出启动服务的命令。
+
+
+## 8.2 启动服务
+
+EMQX已经在6.2节中启动了
+srs已经还没启动，本节启动
+nginx的服务放在walle.service中，启动walle.service即可启动nginx
+walle还没有启动，本节启动
 
 ```bash
-curl -s -u "$KEY:$SECRET" 'http://127.0.0.1:18083/api/v5/nodes' | jq -c '[.[]|{node,edition,node_status}]'
-# 期望：[{"node":"emqx@127.0.0.1","edition":"Enterprise","node_status":"running"}]
+# 启动 srs
+sudo systemctl start srs
+
+# 启动walle
+sudo systemctl start walle
 ```
 
 
-### 8.2 配置 `etc/walle.conf`
+---
 
-仓库已提供模板 `etc/walle.conf.example`（入库），复制后将占位符替换为 6.4 节获取到的 API Key 和 API Secret：
+
+## 9. 配置
+
+服务成功启动后，需要做必须的配置，保证walle服务正常运行。
+
+
+### 9.1 创建内置数据库认证器（必须）
+
+- 1. walle 后端通过 EMQX 内置数据库管理 MQTT 用户，因此，全新安装的 EMQX 没有该认证器，**必须先创建**，否则门户「用户管理」会报 `Authenticator not found in the 'global' scope'`。
+
+执行脚本创建内置数据库认证器
 
 ```bash
-cp etc/walle.conf.example etc/walle.conf
+cd <仓库根目录>/scripts
 
-vi etc/walle.conf
+./emqx_authn_setup.sh
 ```
 
-必填项：
-
-| 键 | 说明 |
-|---|---|
-| `EMQX_API_KEY` / `EMQX_API_SECRET` | 6.4 节创建的 API Key |
-| `WALLE_INGEST_TOKEN` | EMQX 规则引擎回调 walle_api 的共享 token，见 6.7 节；缺失时告警接入返回 503 |
-| `WALLE_ALARM_RETENTION_DAYS` | 可选，告警保留天数，默认 30 |
-
-> 说明：`etc/walle.conf`和`etc/nginx.conf`使用的 API Key 和 API Secret 可以不一样，可以在生成两套 API Key 和 API Secret 后，分别用于门户和 Nginx，比如 Nginx 的权限底一些，门户的权限高一些。这里使用一套。
-
-
-### 8.3 配置 `etc/walle.service`
-
-仓库已提供模板 `etc/walle.service.example`（入库），复制后**改 4 个字段**（用户名 + 仓库路径）：
+验证（返回空列表即正常，NOT_FOUND 说明认证器未创建）：
 
 ```bash
-cp etc/walle.service.example etc/walle.service
-
-vi etc/walle.service
+KEY=$(grep -E '^EMQX_API_KEY=' etc/walle.conf | tail -n1 | cut -d= -f2-)
+SECRET=$(grep -E '^EMQX_API_SECRET=' etc/walle.conf | tail -n1 | cut -d= -f2-)
+curl -s -u "$KEY:$SECRET" \
+  "http://127.0.0.1:18083/api/v5/authentication/password_based:built_in_database/users?limit=10" \
+  | jq .
 ```
 
+> 也可在 Dashboard 操作：访问控制 → 客户端认证 → 创建 → 认证方式「密码认证」、数据源「内置数据库」、用户 ID 类型「username」、密码哈希算法选择 `sha256`、盐位置 `suffix`。
 
-### 8.4 部署脚本
+### 9.2 配置告警落库规则（必须）
 
-`scripts/deploy.sh` 依次完成 3 件事：
+- 1. 告警历史依赖 EMQX 规则引擎，把 `walle/{tenant}/{device}/v1/alarm` 回调给 `walle_api.py`，然后创建 Connector、Action、Rule（EMQX 6.3.2 的 REST 接口）。
 
-1. 校验 `etc/walle.conf` 是否存在、非空，且 `EMQX_API_KEY` / `EMQX_API_SECRET` / `WALLE_INGEST_TOKEN` 已填入真实值（拒绝占位符）。
-2. 以 `scripts/walle.service.example` 为模板，渲染出 `scripts/walle.service`（替换仓库路径与服务用户）。
-3. 用 `sudo` 把 `walle.conf` 安装到 `/etc/walle/walle.conf`（权限 600）、`walle.service` 安装到 `/etc/systemd/system/walle.service`（权限 644），并执行 `systemctl daemon-reload`，最后打印关键信息。
-
-用法：
+执行脚本创建内置数据库认证器
 
 ```bash
-./scripts/deploy.sh
-sudo systemctl enable --now walle
+cd <仓库根目录>/scripts
+
+./emqx_alarm_setup.sh
 ```
 
+> 也可在 Dashboard 操作：集成 → 连接器（HTTP）→ 动作（HTTP）→ 规则。Action 的 body 模板必须是
+> `{"topic":"${topic}","payload":${payload}}`，否则后端无法解析。
 
-### 8.5 启动和停止服务脚本
-
-
-使用方法：
+验证：
 
 ```bash
-chmod +x scripts/start-walle.sh scripts/stop-walle.sh
-./scripts/start-walle.sh start
-./scripts/start-walle.sh status
-./scripts/stop-walle.sh
+KEY=$(grep -E '^EMQX_API_KEY=' etc/walle.conf | tail -n1 | cut -d= -f2-)
+SECRET=$(grep -E '^EMQX_API_SECRET=' etc/walle.conf | tail -n1 | cut -d= -f2-)
+curl -s -u "$KEY:$SECRET" http://127.0.0.1:18083/api/v5/rules/walle_alarm_persist | jq .
 ```
 
-> 门户既可用 `scripts/start-walle.sh` 手动启停，也可由 `walle.service` 托管。
+结果：返回规则且 `enable=true`。
 
 
 
 ---
 
-## 9. 测试推流与 MQTT 客户端
+## 10. 测试推流与 MQTT 客户端
 
 ```bash
+# 推流密钥：登录管理员控制台在「推流密钥」中设置；未设置或与 URL 不一致会被 SRS 拒绝
+SECRET=<推流密钥>
 nohup ffmpeg -hide_banner -loglevel warning -re \
   -f lavfi -i testsrc2=size=640x360:rate=25 \
   -f lavfi -i sine=frequency=1000 \
   -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -g 50 \
-  -c:a aac -b:a 64k -f flv rtmp://127.0.0.1:1935/live/test \
+  -c:a aac -b:a 64k -f flv "rtmp://127.0.0.1:1935/live/test?secret=$SECRET" \
   > ffmpeg-push.log 2>&1 &
 echo $! > ffmpeg-push.pid
 ```
 
-无依赖 MQTT 测试客户端（保持连接并订阅 `demo/#`）：
+无依赖 MQTT 测试客户端（保持连接并订阅指定主题）：
+
+> 9.1 创建内置数据库认证器后，EMQX 不再允许匿名 MQTT 连接。请先在门户创建一个 MQTT 用户，
+> 并使用该账号运行客户端；订阅主题必须在该账号的 ACL 范围内（客户账号可用 `walle/<客户名>/#`）。
 
 ```bash
+MQTT_USERNAME=<MQTT用户名> \
+MQTT_PASSWORD=<MQTT密码> \
+MQTT_TOPIC='walle/<客户名>#' \
 nohup python3 src/backend/mqtt_demo_client.py \
   > mqtt_demo.log 2>&1 &
 echo $! > mqtt_demo.pid
@@ -530,13 +447,13 @@ echo $! > mqtt_demo.pid
 
 ---
 
-## 10. 配置文件清单
+## 11. 配置文件清单
 
 | 路径 | 作用 | 关键项 |
 |---|---|---|
-| `/etc/systemd/system/srs.service`（源文件 `etc/srs.service`） | SRS 服务 | `LimitNOFILE=10000`、`Restart=on-failure`、`User=gs` |
+| `/etc/systemd/system/srs.service`（源文件 `etc/srs.service`） | SRS 服务 | `LimitNOFILE=10000`、`Restart=on-failure`、`User=<部署用户>` |
 | `/etc/walle/walle.conf`（源文件 `etc/walle.conf`） | 门户保密配置 | `EMQX_API_KEY`/`EMQX_API_SECRET`、`MEDIA_SERVER_SECRET`、`WALLE_INGEST_TOKEN`，权限 600 |
-| `/etc/systemd/system/walle.service`（由 `scripts/walle.service` 安装） | 门户服务 | `Type=forking`、`EnvironmentFile`、8088 |
+| `/etc/systemd/system/walle.service`（源文件 `etc/walle.service`，由 `scripts/deploy.sh` 安装） | 门户服务 | `Type=forking`、`EnvironmentFile`、8088 |
 | `/etc/emqx/emqx.conf` | EMQX 配置（deb 自带） | 默认 dashboard 账号、监听端口 |
 | `etc/srs.conf` | SRS 运行配置 | `max_connections 800`、8080/1985/9972、`rtc_server` |
 | `etc/nginx.conf`（由模板复制） | 门户反代 | 8088、`/api/`、`/emqx-api/` 注入 Basic、`/srs/` 关闭缓冲 |
@@ -545,25 +462,25 @@ echo $! > mqtt_demo.pid
 | `src/web/admin.html` | 管理员控制台 | 5s 轮询 EMQX/SRS 接口 |
 | `src/web/user.html` | 普通用户控制台 | HTTP-FLV 播放、实时/历史告警、设备与时间过滤 |
 | `scripts/start-walle.sh` | 门户启停 | start/stop/status |
-| `scripts/deploy.sh` | 门户部署/安装 | 校验 walle.conf、渲染并安装 walle.service |
-| `etc/emqx_api_key.json` | API 凭据 | 0600，`api_key`/`api_secret` |
+| `scripts/deploy.sh` | 门户部署/安装 | 检查 etc/ 下生成的配置与服务文件，安装 `walle.conf` 和 systemd 单元 |
+| `etc/emqx_api_key.json`（可选） | 手工保存 API 凭据时使用 | 0600，`api_key`/`api_secret` |
 | `/etc/docker/daemon.json` | Docker 守护配置 | 镜像加速、日志轮转（引擎保留） |
 
 ---
 
-## 11. 验证步骤
+## 12. 验证步骤
 
 ```bash
 cd <仓库根目录>
-KEY=$(jq -r .api_key etc/emqx_api_key.json)
-SECRET=$(jq -r .api_secret etc/emqx_api_key.json)
+KEY=$(grep -E '^EMQX_API_KEY=' etc/walle.conf | tail -n1 | cut -d= -f2-)
+SECRET=$(grep -E '^EMQX_API_SECRET=' etc/walle.conf | tail -n1 | cut -d= -f2-)
 
 # EMQX
 curl -s -u "$KEY:$SECRET" 'http://127.0.0.1:18083/api/v5/clients?limit=2' | jq -c '{count:.meta.count}'
 curl -s -u "$KEY:$SECRET" 'http://127.0.0.1:18083/api/v5/subscriptions?limit=2' | jq -c '{count:.meta.count}'
 curl -s -u "$KEY:$SECRET" 'http://127.0.0.1:18083/api/v5/nodes' | jq -c '[.[]|{node,version,edition,node_status}]'
 curl -s -u "$KEY:$SECRET" 'http://127.0.0.1:18083/api/v5/metrics' | jq -c '.[0]|{node,fields:(keys|length)}'
-# 内置数据库认证器（应返回 data 数组，NOT_FOUND 说明 6.4 节未执行）
+# 内置数据库认证器（应返回 data 数组，NOT_FOUND 说明 9.1 节未执行）
 curl -s -u "$KEY:$SECRET" 'http://127.0.0.1:18083/api/v5/authentication/password_based:built_in_database/users?limit=2' | jq -c '{count:.meta.count}'
 
 # SRS
@@ -578,6 +495,8 @@ curl -s -o /dev/null -w 'flv=%{http_code} type=%{content_type}\n' --max-time 5 h
 # 管理员登录（正确密码 200 并返回 token，错误密码 401）
 curl -s -o /dev/null -w 'admin-login=%{http_code}\n' -X POST http://127.0.0.1:8088/api/admin/login \
   -H 'Content-Type: application/json' -d '{"username":"<Dashboard账号>","password":"<密码>"}'
+curl -s -o /dev/null -w 'bad-login=%{http_code}\n' -X POST http://127.0.0.1:8088/api/admin/login \
+  -H 'Content-Type: application/json' -d '{"username":"<Dashboard账号>","password":"wrong"}'
 # 未带 token 访问用户接口应为 401
 curl -s -o /dev/null -w 'users=%{http_code}\n' http://127.0.0.1:8088/api/users
 
@@ -603,7 +522,7 @@ login=200；bad-login=401；internal=403；规则 enable=true
 
 
 
-## 12. 运行注意事项
+## 13. 运行注意事项
 
 1. **EMQX 无 CORS**：浏览器直连 18083 不会返回 `Access-Control-Allow-Origin`，`OPTIONS` 预检 500；必须经门户同源反代。新增接口时也要走 `/emqx-api/`。
 2. **SRS ulimit**：`max_connections` 必须小于 `LimitNOFILE`，否则启动报错；systemd 已设 10000。
@@ -618,7 +537,7 @@ login=200；bad-login=401；internal=403；规则 enable=true
 
 ---
 
-## 13. 附录：首次部署验证结果（2026-11-15）
+## 14. 附录：首次部署验证结果（2026-11-15）
 
 ```text
 systemctl is-active emqx  → active
