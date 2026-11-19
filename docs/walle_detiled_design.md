@@ -1,6 +1,6 @@
 # walle 服务端详细设计
 
-> 适用版本：walle-ai v0.1（2026-11-16 原型）
+> 适用版本：walle-ai v0.1（2026-11-19，新增告警持久化）
 > 运行环境：Ubuntu 24.04 arm64 裸机，EMQX Enterprise 6.3.2 + SRS 7.0.215 + Nginx 门户
 > 本文只描述设计与实现细节；安装、配置、上线步骤见 [walle_deployment_require.md](./walle_deployment_require.md)。
 
@@ -13,10 +13,12 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 | 层 | 组件 | 职责 |
 |---|---|---|
 | 接入/门户层 | Nginx（8088） | 静态页面托管、同源反代、注入 EMQX 管理凭据 |
-| 消息层 | EMQX Enterprise 6.3.2 | MQTT 连接、主题路由、账号认证（登录校验复用此账号体系） |
+| 消息层 | EMQX Enterprise 6.3.2 | MQTT 连接、主题路由、账号认证、规则引擎（告警回调） |
+| 业务层 | `walle_api.py`（9000） | 登录会话、用户/绑定管理、告警落库与查询 |
+| 存储层 | SQLite `src/backend/data/users.db` | 用户角色、设备绑定、运行设置、告警历史 |
 | 媒体层 | SRS 7.0.215 | RTMP 接收、HTTP-FLV/HLS/WebRTC 分发、Prometheus 指标 |
 
-服务端**不持有业务数据库**，当前所有业务数据（设备、告警、录像）均为前端占位或直接读 EMQX/SRS 实时接口；持久化属于后续演进项（见第 12 节）。
+服务端自 v0.1 起持有本地 SQLite：角色、设备绑定、推流密钥与**告警历史**均已落库；设备状态、录像索引仍直接读 MQTT/SRS 实时接口，设备与录像的持久化属于后续演进项（见第 13 节）。
 
 ---
 
@@ -30,6 +32,7 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
         │  Nginx 门户（托管/手动，8088） │
         │  /            → src/web/*.html│
         │  /api/        → walle-api    │
+        │  /api/internal/ → deny       │
         │  /emqx-api/   → EMQX +Basic  │
         │  /srs-api/    → SRS API      │
         │  /srs/        → SRS HTTP     │
@@ -41,10 +44,18 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
         ┌───────▼──────┐  ┌─────▼────────┐
         │ EMQX 6.3.2   │  │ SRS 7.0.215  │
         │ systemd 托管 │  │ systemd 托管 │
-        └───────▲──────┘  └─────▲────────┘
-                │ MQTT          │ RTMP / WebRTC
-                └───────┬───────┘
-                树莓派小车（设备侧）
+        └───┬───────▲──┘  └─────▲────────┘
+            │ MQTT  │            │ RTMP / WebRTC
+            │       │            │
+            │   ┌───▼────────────┴──┐
+            │   │ 树莓派小车（设备）  │
+            │   └───────────────────┘
+            │ 规则引擎 HTTP 回调（回环）
+            ▼
+      ┌──────────────────────┐      ┌──────────────────┐
+      │ walle_api 127.0.0.1  │─────▶│ SQLite users.db  │
+      │ :9000                │      │ alarms / users   │
+      └──────────────────────┘      └──────────────────┘
 ```
 
 设计要点：
@@ -52,7 +63,8 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 1. **单一入口**：浏览器只访问 8088，不直连 18083/1985/8080。EMQX 6.x 不返回 CORS 头，直连会因预检失败而不可用，因此门户必须同源反代。
 2. **凭据分层**：管理员登录由 `walle_api.py` 调用 EMQX `/api/v5/login` 校验并签发内存 token；查询类接口 `/emqx-api/` 由 Nginx 注入只读 API Key，前端不持有管理凭据。
 3. **前后端同源**：所有页面用相对路径请求，换机器/IP 时前端代码无需改动。
-4. **无状态前端**：登录态仅存 `sessionStorage`，关闭标签页即失效，服务端无 session。
+4. **登录态**：token 仅存 `sessionStorage`，关闭标签页即失效；服务端会话保存在 `walle_api.py` 内存中，进程重启即失效。
+5. **告警旁路落库**：EMQX 规则引擎订阅告警主题，通过回环 HTTP 把消息交给 `walle_api.py`，不改变设备原有的 MQTT 发布/订阅链路；规则或 API 故障只影响历史留档，不影响实时告警显示。
 
 ---
 
@@ -127,9 +139,9 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 
 1. **两套认证源**：管理员用 EMQX Dashboard 账号（`/api/admin/login`）；客户用 EMQX 内置数据库里的 MQTT 账号（`/api/login`），也就是「用户管理」页创建的用户名/密码。
 2. **客户登录校验角色**：服务端查 SQLite，角色必须是「客户」，「设备」账号（小车）不能登录门户；管理员入口不做该校验。
-3. **token 不参与后续鉴权**：门户页面与查询接口均不使用该 token；真正的接口凭据是 Nginx 注入的 API Key。
+3. **token 的用途**：`/api/users` 等管理接口要求管理员 token；`/api/alarms` 要求任意有效会话 token，并按会话角色限定租户。`/emqx-api/` 查询仍由 Nginx 注入只读 API Key，前端不持有管理凭据。
 4. **失败处理**：密码错误 401；角色不符 403（提示来自后端）；EMQX 不可达 502；登录按钮在请求期间 `disabled`，防止重复提交。
-5. **已知缺陷**：`/api/login` 与 `/api/admin/login` 未做限流与失败计数，存在暴力破解风险（见第 13 节）；`/api/users` 已要求管理员 token。
+5. **已知缺陷**：`/api/login` 与 `/api/admin/login` 未做限流与失败计数，存在暴力破解风险（见第 14 节）；`/api/users` 已要求管理员 token。
 
 ---
 
@@ -140,7 +152,8 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 | location | 上游 | 关键处理 | 目的 |
 |---|---|---|---|
 | `/` | 本地 portal 目录 | `try_files $uri $uri/ /index.html` | 静态页面 + SPA 式回退 |
-| `/api/` | `127.0.0.1:9000` | 反代到 walle_api.py | 登录与用户管理 |
+| `/api/` | `127.0.0.1:9000` | 反代到 walle_api.py | 登录、用户管理、告警查询 |
+| `/api/internal/` | — | `deny all` | 仅允许 EMQX 规则引擎走回环直连 9000 |
 | `/emqx-api/` | `18083/api/v5/` | 注入 `Authorization: Basic <base64(api_key:api_secret)>` | 免前端持有管理凭据 |
 | `/srs-api/` | `1985/api/v1/` | `proxy_read_timeout 60s` | 媒体查询接口 |
 | `/srs/` | `8080/` | `proxy_buffering off`、`read_timeout 3600s` | 长连接拉流（FLV/HLS/console/players） |
@@ -180,7 +193,7 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 
 ## 8. 用户管理 API 设计
 
-`src/backend/walle_api.py` 是零依赖的 Python 标准库服务，监听 `127.0.0.1:9000`，由 Nginx 的 `/api/` 反代进来。它不依赖外部数据库服务：密码存于 EMQX，角色存于本地 SQLite。
+`src/backend/walle_api.py` 是零依赖的 Python 标准库服务，监听 `127.0.0.1:9000`，由 Nginx 的 `/api/` 反代进来。它不依赖外部数据库服务：密码存于 EMQX，角色/绑定/告警存于本地 SQLite。
 
 ### 8.1 数据存储分工
 
@@ -190,13 +203,14 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 | 密码 | EMQX 内置数据库 | sha256 + suffix 加盐，walle 不存密码 |
 | 角色 | `src/backend/data/users.db`（SQLite） | `客户` / `设备` 二选一，单文件自动创建 |
 | 超级用户标记 | EMQX | 两种角色均 `is_superuser=false`，权限由 ACL 控制 |
+| 告警历史 | `src/backend/data/users.db`（`alarms` 表） | EMQX 规则引擎回调落库，按租户隔离，见第 9 节 |
 
 ### 8.2 接口
 
 | 接口 | 方法 | 鉴权 | 用途 |
 |---|---|---|---|
 | `/api/admin/login` | POST | EMQX Dashboard 账号 | 管理员登录，签发管理 token |
-| `/api/login` | POST | MQTT CONNECT 校验 | 客户登录（不签发管理权限） |
+| `/api/login` | POST | MQTT CONNECT 校验 | 客户登录，签发客户会话 token（无管理权限） |
 | `/api/users` | GET / POST | `Bearer <token>` | 用户列表 / 新增用户 |
 | `/api/users/{用户名}` | PUT / DELETE | `Bearer <token>` | 改密 / 删除用户 |
 
@@ -204,36 +218,210 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 
 - 管理员在登录页选择「管理员」→ 调用 `POST /api/admin/login` → `walle_api.py` 调 EMQX `/api/v5/login` 校验 Dashboard 账号（非 administrator 拒绝）→ 签发内存 token。
 - token 只保存在内存、有效期 12 小时，进程重启即失效。
-- 客户登录 `POST /api/login` 不签发管理权限（见第 5 节登录流程）。
-- 所有 `/api/users*` 操作均要求请求头 `Authorization: Bearer <token>`。
+- 客户登录 `POST /api/login` 签发角色为「客户」的会话 token，只能查询本租户告警，不能访问管理接口（见第 5 节登录流程）。
+- 会话记录为 `(username, expires_at, login_at, role)`，`role` 决定管理权限与告警可见范围。
+- 所有 `/api/users*` 操作均要求管理员 token。
 
 ### 8.4 启停与运维
 
 - 启停合并进门户脚本：`scripts/start-walle.sh` 同时拉起 nginx 与 API，`scripts/stop-walle.sh` 同时停止两者。
 - API 日志：`log/walle-api.log`；pid：`.run/nginx/walle-api.pid`。
-- SQLite 使用 Python 内置 `sqlite3` 模块，无需安装 MySQL/PostgreSQL；备份只需拷贝 `src/backend/data/users.db`。
+- SQLite 使用 Python 内置 `sqlite3` 模块，无需安装 MySQL/PostgreSQL；备份用 `sqlite3 src/backend/data/users.db ".backup backup.db"`，热备时不要只拷贝主库文件（WAL 中可能还有未合并数据）。
 - 部署/上线步骤见 [walle_deployment_require.md](./walle_deployment_require.md) 第 8 节。
 
 ---
 
-## 9. MQTT 业务约定
+## 9. 告警持久化与历史查询设计
 
-### 9.1 主题规范
+### 9.1 数据链路
+
+```text
+设备 publish walle/{tenant}/{device}/v1/alarm
+        │
+        ▼
+EMQX 规则引擎 walle_alarm_persist
+  SQL: SELECT topic, payload FROM "walle/+/+/v1/alarm"
+        │
+        ▼ HTTP action walle_alarm_hook
+   POST http://127.0.0.1:9000/api/internal/alarms
+   Header: X-Walle-Ingest: <token>
+   Body: {"topic":"${topic}","payload":${payload}}
+        │
+        ▼
+walle_api 校验来源/token → 去重 → INSERT OR IGNORE
+        │
+        ▼
+SQLite alarms 表（保留 30 天）
+
+浏览器 GET /api/alarms?from=&to=&device=...
+        │ Authorization: Bearer <会话 token>
+        ▼
+walle_api 按会话角色限定 tenant → 按时间倒序分页返回
+```
+
+设计要点：
+
+1. **旁路采集**：设备仍按原主题发布，浏览器仍通过 MQTT 实时接收；规则引擎只做额外转发，不改变业务链路。
+2. **故障隔离**：EMQX 规则或 walle_api 异常只影响告警留档，实时告警显示不受影响；落库失败不会阻塞 MQTT 消息。
+3. **去重**：EMQX 的 HTTP action 失败会重试，设备也可能重复上报，服务端以内容哈希做唯一约束，重复写入返回 `duplicate=true`。
+
+### 9.2 主题与载荷
+
+实际主题：`walle/{tenant}/{device}/v1/alarm`。
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `event` | 否 | 事件名，如 `temperature_high` |
+| `level` | 否 | `info` / `warning` / `critical`，缺省 `info` |
+| `metric` | 否 | 指标名，如 `temperature`、`battery` |
+| `alarm_type` | 否 | 告警类型；兼容旧字段 `type` |
+| `message` | 否 | 展示文案，最长 500 字符 |
+| `timestamp` | 否 | 设备发生时间，秒/毫秒/微秒时间戳或 ISO 8601；兼容 `ts`、`occurred_at`、`time` |
+| `datetime` | 否 | 可直接展示的时间文本，优先使用；缺失时按 `occurred_at` 本地格式化 |
+| `hostname` | 否 | 设备展示名 |
+| `device_id` / `uuid` | 否 | 设备唯一标识 |
+| `ip` | 否 | 设备 IP |
+
+时间处理规则：
+
+- 按 `timestamp` → `ts` → `occurred_at` → `time` 顺序取第一个非空值。
+- 数字按 epoch 处理；大于 `1e12` 时循环除以 1000，兼容毫秒/微秒/纳秒。
+- 字符串支持纯数字或 ISO 8601（含 `Z`）。
+- 无法解析、早于 2000 年或晚于当前时间一年以上时，回退为服务端收到时间。
+- 服务端统一存 `occurred_at`（epoch 秒）与 `occurred_text`（`YYYY-MM-DD HH:MM:SS`）。
+
+去重键：`tenant|device|event|metric|alarm_type|原始时间|message` 的 SHA-1，作为 `alarms.dedupe` 唯一约束。
+
+### 9.3 表结构
+
+```sql
+CREATE TABLE IF NOT EXISTS alarms (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant        TEXT NOT NULL,
+    device        TEXT NOT NULL,
+    hostname      TEXT,
+    device_uuid   TEXT,
+    ip            TEXT,
+    event         TEXT,
+    level         TEXT,
+    metric        TEXT,
+    alarm_type    TEXT,
+    message       TEXT,
+    occurred_at   INTEGER NOT NULL,
+    occurred_text TEXT,
+    received_at   INTEGER NOT NULL,
+    detail        TEXT,
+    dedupe        TEXT NOT NULL UNIQUE
+);
+
+CREATE INDEX idx_alarms_tenant_time ON alarms(tenant, occurred_at DESC);
+CREATE INDEX idx_alarms_device_time ON alarms(device, occurred_at DESC);
+CREATE INDEX idx_alarms_time        ON alarms(occurred_at DESC);
+```
+
+- `detail` 保存完整 payload JSON，便于后续排障与字段扩展。
+- SQLite 开启 WAL，连接设置 `busy_timeout=5000`，避免规则回调与页面查询互相阻塞。
+- 保留期按 `occurred_at` 计算，默认 30 天；接入请求触发的清理最多每小时执行一次，也可通过 `WALLE_ALARM_RETENTION_DAYS` 调整。
+
+### 9.4 接入接口
+
+`POST /api/internal/alarms`（仅回环地址）
+
+| 项 | 说明 |
+|---|---|
+| 来源限制 | 仅接受 `127.0.0.1` / `::1`；Nginx 对 `/api/internal/` 配置 `deny all` |
+| 鉴权 | 请求头 `X-Walle-Ingest` 必须等于 `etc/walle.conf` 的 `WALLE_INGEST_TOKEN` |
+| 请求体 | `{"topic":"walle/{tenant}/{device}/v1/alarm","payload":{...}}`；`payload` 可为对象或 JSON 字符串 |
+| 成功响应 | `200 {"ok":true,"duplicate":false,"id":123}` |
+| 重复消息 | `200 {"ok":true,"duplicate":true,"id":...}` |
+| 失败响应 | `400` 主题/载荷不合法；`403` 来源或 token 不合法；`503` 未配置 token |
+
+### 9.5 查询接口
+
+`GET /api/alarms`，要求 `Authorization: Bearer <token>`。
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `from` | epoch 秒或 ISO | `occurred_at >= from`，可空 |
+| `to` | epoch 秒或 ISO | `occurred_at <= to`，可空 |
+| `device` | string | 精确匹配设备，可空 |
+| `level` | string | `info` / `warning` / `critical`，可空 |
+| `tenant` | string | 仅管理员可用；客户忽略并强制为本租户 |
+| `page` | int | 页码，从 1 开始，默认 1；超出总页数时自动收敛到最后一页 |
+| `limit` | int | 每页条数，默认 30，上限 30 |
+
+- 客户只能看到 `tenant = 会话用户名` 的告警；管理员默认看全部，可按 `tenant` 过滤。
+- 排序固定为 `occurred_at DESC, id DESC`，分页使用 `LIMIT/OFFSET`，便于前端渲染页码。
+- 响应包含 `items`、`total`、`page`、`pages`、`page_size`；`pages = 0` 表示没有匹配数据。
+- 单条记录字段与 9.3 表结构一致（不含 `detail`）。
+
+`GET /api/alarms/devices` 返回当前可见范围内的设备聚合：
+
+```json
+{"data":[{"device":"car1","hostname":"小车 1 号","count":12,"last_at":1795056654}]}
+```
+
+### 9.6 前端交互
+
+普通用户控制台「告警信息」面板分为「当前」「历史」两个子 Tab：
+
+- **当前**：只显示本次页面打开后通过 MQTT 实时收到的 `walle/{tenant}/+/v1/alarm` 告警，不再限制当前选中设备。内存中保留最近 300 条，每页 30 条；超过一页时底部显示「上一页 / 下一页」。
+- **历史**：从 `/api/alarms` 查询数据库，每页固定最多 30 条；超过一页时底部显示「第1页、第2页、…、最后页」，点击页码直接跳转。
+- **过滤栏**：仅历史 Tab 显示，包含设备下拉（含「全部设备」）、开始/结束时间（`datetime-local`）和「查询」。点击查询从第 1 页重新检索；切换页码沿用当前过滤条件。
+- 进入历史 Tab 的首次操作会加载最近 30 天、全部设备的第 1 页；之后切换 Tab 保留已查结果，避免重复请求。
+- 当前 Tab 收到的告警不影响历史 Tab 的查询结果；实时告警的持久化由 EMQX 规则独立完成，不依赖页面是否打开。
+- 告警条目统一为三行：设备名、消息、事件/级别/指标/类型；右侧为发生时间。
+
+### 9.7 EMQX 规则配置
+
+当前环境中的对象（均为 EMQX 6.3.2）：
+
+| 对象 | ID | 关键配置 |
+|---|---|---|
+| Connector | `http:walle_alarm_http` | `url=http://127.0.0.1:9000`，`pool_size=4` |
+| Action | `http:walle_alarm_hook` | `POST /api/internal/alarms`，请求头带 `X-Walle-Ingest` |
+| Rule | `walle_alarm_persist` | `SELECT topic, payload FROM "walle/+/+/v1/alarm"` |
+
+Action body 模板：
+
+```json
+{"topic":"${topic}","payload":${payload}}
+```
+
+注意：
+
+- 模板要求 `payload` 本身是合法 JSON 对象；设备侧告警载荷必须是 JSON。
+- `X-Walle-Ingest` 必须与 `etc/walle.conf` 中的 `WALLE_INGEST_TOKEN` 完全一致，轮换 token 时需同时更新 Connector/Action 与配置文件。
+- 规则只订阅 `walle/{tenant}/{device}/v1/alarm`，不会把其他 v1 主题写入告警表。
+- 规则、Action、Connector 的状态可在 EMQX Dashboard「集成 → 规则」中查看，失败重试次数由 Action 的 `max_retries` 控制。
+
+### 9.8 运维与限制
+
+- 备份：停止写入时拷贝 `src/backend/data/users.db`；WAL 模式下热备需同时处理 `users.db-wal` / `users.db-shm`，或使用 `sqlite3 users.db ".backup backup.db"`。
+- 容量：单条告警通常小于 1 KB；按 100 台设备、每台每天 100 条估算，30 天约 30 万条，SQLite 可轻松承载。
+- 当前未实现告警确认/处理状态、按级别推送、跨租户管理员统计；这些属于后续演进。
+- `detail` 保存原始 payload，若设备上报超大字段会放大库体积，设备侧应保持载荷精简。
+
+---
+
+## 10. MQTT 业务约定
+
+### 10.1 主题规范
 
 | Topic | 方向 | 用途 | QoS |
 |---|---|---|---|
-| `walle/{device_id}/cmd` | 平台 → 小车 | 运动、录像、模式、鸣笛、灯光等指令 | 1 |
-| `walle/{device_id}/state` | 小车 → 平台 | 位置、电量、传感器状态上报 | 1 |
-| `walle/{device_id}/alarm` | 小车 → 平台 | 碰撞、低电量、离线等告警事件 | 1 |
-| `walle/{device_id}/heartbeat` | 小车 → 平台 | 心跳，默认 30s | 0 |
+| `walle/{tenant}/{device}/v1/cmd` | 平台 → 小车 | 运动、录像、模式、鸣笛、灯光等指令 | 1 |
+| `walle/{tenant}/{device}/v1/state` | 小车 → 平台 | 位置、电量、传感器状态上报 | 1 |
+| `walle/{tenant}/{device}/v1/alarm` | 小车 → 平台 | 碰撞、低电量、离线等告警事件 | 1 |
+| `walle/{tenant}/{device}/v1/heartbeat` | 小车 → 平台 | 心跳，默认 30s | 0 |
 
 约定：
 
-- 一条设备对应一个 `device_id`，主题前缀即权限边界，后续 ACL 按 `walle/{device_id}/#` 授予。
+- `tenant` 为客户用户名，`device` 为设备用户名；主题前缀即权限边界，ACL 按租户与设备授予。
 - 指令载荷建议 JSON：`{"method":"move","value":"forward","seq":123,"ts":...}`，`seq` 用于设备端去重。
 - 运动指令采用“按下发、松开停”语义，前端在 `mouseup`/`mouseleave`/`touchend` 时发 `stop`，防止失控。
 
-### 9.2 设备侧状态
+### 10.2 设备侧状态
 
 | 事件 | 上报主题 | 预期周期 |
 |---|---|---|
@@ -241,15 +429,15 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 | 状态 | `state` | 1s（位置/速度）、30s（电量） |
 | 告警 | `alarm` | 事件触发即上报 |
 
-### 9.3 测试用客户端
+### 10.3 测试用客户端
 
 `src/backend/mqtt_demo_client.py` 是零依赖 MQTT 客户端，用于验证连接与订阅（订阅 `demo/#`），不属于业务代码。
 
 ---
 
-## 10. SRS 集成设计
+## 11. SRS 集成设计
 
-### 10.1 推拉流链路
+### 11.1 推拉流链路
 
 ```text
 小车/ffmpeg ──RTMP 1935──▶ SRS ──┬─ HTTP-FLV 8080  → 门户 /srs/{app}/{stream}.flv
@@ -261,7 +449,7 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 - 播放地址（同源反代后）：`http://<host>:8088/srs/live/{stream}.flv`。
 - 门户实时监控页使用 mpegts.js 播 HTTP-FLV，`isLive: true`、`hasAudio: false`（当前测试流带音频但页面静音播放，规避浏览器自动播放限制）。
 
-### 10.2 媒体侧关键配置
+### 11.2 媒体侧关键配置
 
 | 配置项 | 值 | 说明 |
 |---|---|---|
@@ -272,7 +460,7 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 | `max_connections` | 800 | 必须小于 systemd `LimitNOFILE=10000` |
 | `exporter` | 9972 | Prometheus 指标 |
 
-### 10.3 使用的接口
+### 11.3 使用的接口
 
 | 接口 | 用途 |
 |---|---|
@@ -283,9 +471,9 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 
 ---
 
-## 11. 控制台功能设计
+## 12. 控制台功能设计
 
-### 11.1 管理员控制台（admin.html）
+### 12.1 管理员控制台（admin.html）
 
 左侧菜单为“平铺 + 可折叠分组”，面板通过 `data-panel` 切换，**同一页面内切换不刷新**。数据加载：进入页面全量拉一次，之后每 5s 轮询 EMQX 与 SRS。
 
@@ -296,7 +484,7 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 | MQTT · 概览 | `/emqx-api/metrics` 字段 + 订阅数 | 已实现 |
 | MQTT · 用户管理 | `/api/users`（walle_api.py → EMQX 内置数据库） | 已实现：新增/删除/改密码，角色客户/设备 |
 | MQTT · 主题配置 | 静态主题规范表 | 已实现（文档性质） |
-| MQTT · 规则引擎 | — | 规划：alarm → 存储/Webhook |
+| MQTT · 规则引擎 | EMQX `walle_alarm_persist` | 已实现：alarm → HTTP 回调 → SQLite |
 | SRS · 概览 | `streams` + `clients` 聚合带宽 | 已实现 |
 | SRS · 流管理 | `/srs-api/streams/` 明细表 | 已实现 |
 | SRS · 服务配置 | 静态配置展示 + `candidate` 展示 | 已实现（静态） |
@@ -304,7 +492,7 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 | 普通用户管理 | — | 规划：用户表 + 设备绑定 |
 | 日志 | — | 规划：EMQX/SRS/登录日志汇聚 |
 
-### 11.2 普通用户控制台（user.html）
+### 12.2 普通用户控制台（user.html）
 
 | 面板 | 数据来源 | 状态 |
 |---|---|---|
@@ -312,19 +500,18 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 | 设备信息 | 选中设备对象 | 已实现（基于占位数据） |
 | 实时监控 | `/srs/{stream}.flv` + mpegts.js | 已实现播放；控制指令为占位 |
 | 视频录像 | — | 规划：SRS DVR + 索引检索 |
-| 告警 | 前端常量 `ALARMS` | 占位，待订阅 `walle/+/alarm` |
+| 告警 | MQTT 实时 + `/api/alarms` | 已实现：全部设备实时告警、历史查询、设备/时间过滤、分页 |
 
-运动控制指令当前只在页面“最近指令”日志中回显，真实实现需增加服务端发布接口（见 10.3）。
+运动控制指令当前只在页面“最近指令”日志中回显，真实实现需增加服务端发布接口（见 12.3）。
 
-### 11.3 待补齐的服务端能力
+### 12.3 待补齐的服务端能力
 
 前端已按下列接口约定留出调用位置，但服务端尚未实现：
 
 | 能力 | 建议接口 | 实现方式 |
 |---|---|---|
 | 设备列表/详情 | `GET /walle-api/devices` | 后端读设备表或 EMQX 在线状态 |
-| 指令下发 | `POST /walle-api/devices/{id}/cmd` | 后端用 MQTT 客户端 publish 到 `walle/{id}/cmd` |
-| 告警查询 | `GET /walle-api/alarms` | 规则引擎落库后查询 |
+| 指令下发 | `POST /walle-api/devices/{id}/cmd` | 后端用 MQTT 客户端 publish 到 `walle/{tenant}/{device}/v1/cmd` |
 | 录像检索 | `GET /walle-api/recordings` | SRS DVR 产出文件索引 |
 | 重启/运维动作 | `POST /walle-api/ops/{action}` | 后端受限执行 systemctl，禁止前端直调 |
 
@@ -332,45 +519,57 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 
 ---
 
-## 12. 数据模型规划
+## 13. 数据模型
 
-当前无数据库。规划中的最小模型：
+`src/backend/data/users.db` 中已落地的表：
 
 ```text
-user      (id, username, password_hash, role, created_at)
+users    (username, role, created_at)
+bindings (device, customer, created_at)
+settings (key, value)
+alarms   (id, tenant, device, hostname, device_uuid, ip, event, level, metric,
+          alarm_type, message, occurred_at, occurred_text, received_at,
+          detail, dedupe)
+```
+
+后续规划（尚未落库）：
+
+```text
 device    (id, name, owner_user_id, location, stream_app, stream_name, last_seen_at)
-alarm     (id, device_id, level, type, message, occurred_at, status)
 recording (id, device_id, path, start_at, end_at, size, trigger)
 ```
 
 约定：
 
-- `device.id` 即 MQTT 主题中的 `{device_id}`。
-- 每台设备归属 0..1 个普通用户；管理员可见全部。
-- 用户与 MQTT 凭据一一映射（`username = user_{id}`），ACL 限定 `walle/{device_id}/#`。
+- `device` 即设备用户名，同时是 MQTT 主题中的 `{device}`；`tenant` 为客户用户名。
+- 每台设备归属 0..1 个客户（`bindings` 表），管理员可见全部。
+- 用户与 MQTT 凭据一一映射，ACL 限定 `walle/{tenant}/{device}/#`。
+- 告警按 `tenant` 隔离，客户查询时由服务端强制追加租户条件。
 
 ---
 
-## 13. 安全设计与已知风险
+## 14. 安全设计与已知风险
 
 | 风险 | 现状 | 处置建议 |
 |---|---|---|
 | 管理 Key 暴露面 | `/emqx-api/` 对 8088 所有访问者开放，等同可读 EMQX 管理数据 | 引入 BFF 做会话鉴权；或限制 8088 来源 IP |
-| 角色可伪造 | `walle_role` 存于前端 | 角色判定下沉到 BFF，登录后签发服务端会话 |
+| 角色可伪造 | `walle_role` 仍存于前端，但仅影响页面跳转 | 管理接口与告警查询均按服务端会话 `role` 校验，前端角色无法提权 |
+| 告警越权查询 | 客户令牌可能被用于查询其他租户 | 查询强制 `tenant = 会话用户名`，管理员才可跨租户 |
+| 告警接入伪造 | `/api/internal/alarms` 可写库 | 仅回环地址 + `X-Walle-Ingest` 共享 token；Nginx `deny all` |
 | 暴力破解 | `/api/login`、`/api/admin/login` 无限流 | Nginx `limit_req` + 失败锁定 |
 | 默认凭据 | EMQX `admin/public`、默认 Erlang cookie | 部署时立即修改 |
 | 明文传输 | 8088 为 HTTP | 全链路 HTTPS |
 | 传输凭据 | 登录密码明文经 Nginx 转 EMQX（内网回环） | 保持回环；对外启用 TLS |
-| 设备侧鉴权 | 暂无 ACL | 按 `walle/{device_id}/#` 下发 ACL，一设备一凭据 |
+| 设备侧鉴权 | 已按租户/设备生成 EMQX ACL | 设备凭据轮换与自动下发仍需完善 |
 
 ---
 
-## 14. 演进路线
+## 15. 演进路线
 
-1. 增加 BFF 层：服务端会话、角色校验、指令下发、运维动作。
-2. 接入数据库，落地设备/告警/录像模型（用户角色已用 SQLite 落地）。
-3. 设备侧 MQTT 凭据与 ACL 自动化下发。
-4. 管理员控制台补齐规则引擎、日志检索。
-5. 普通用户控制台接入真实设备与告警订阅，录像回看。
+1. BFF 能力补全：设备列表、指令下发、运维动作（服务端会话与角色校验已具备）。
+2. 告警增强：确认/处理状态、分级订阅推送、非 JSON 载荷兜底。
+3. 落地设备与录像模型（用户、绑定、设置、告警已用 SQLite 落地）。
+4. 设备侧 MQTT 凭据与 ACL 自动化下发。
+5. 管理员控制台补齐日志检索与告警总览。
 6. 全链路 HTTPS、限流、审计。
 7. 门户与测试推流 systemd 化，去掉手工启停。

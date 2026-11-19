@@ -22,7 +22,7 @@ info "1/3 检查配置文件 $CONF_SRC"
 [ -f "$CONF_SRC" ] || fail "找不到 etc/walle.conf，请先执行：cp etc/walle.conf.example etc/walle.conf 并填入真实密钥"
 [ -s "$CONF_SRC" ] || fail "etc/walle.conf 是空文件"
 
-for key in EMQX_API_KEY EMQX_API_SECRET; do
+for key in EMQX_API_KEY EMQX_API_SECRET WALLE_INGEST_TOKEN; do
   value="$(grep -E "^${key}=" "$CONF_SRC" | tail -n1 | cut -d= -f2- || true)"
   [ -n "$value" ] || fail "etc/walle.conf 缺少 $key"
   case "$value" in

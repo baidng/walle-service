@@ -41,6 +41,9 @@ http {
         # SRS 推流鉴权回调专用：只允许本机 SRS 直连 9000，禁止外部访问
         location = /api/srs/hook { deny all; }
 
+        # 告警接入只允许 EMQX 规则引擎走回环地址直连 9000，外部一律拒绝
+        location /api/internal/ { deny all; }
+
         location /api/ {
             proxy_pass http://127.0.0.1:9000;
             proxy_http_version 1.1;

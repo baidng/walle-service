@@ -163,7 +163,29 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
 .videoMsg{margin-top:9px;font-size:11.5px;line-height:1.55;color:var(--dim);max-height:64px;overflow:auto;word-break:break-word}
 .videoMsg.ok{color:#9ff0cf}
 .videoMsg.err{color:#ffb3b3}
+.alarmTools{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:10px}
+.alarmTools select,.alarmTools input{height:31px;padding:0 9px;border-radius:9px;border:1px solid var(--line2);
+  background:var(--card2);font-size:11.5px;color:var(--text);outline:none}
+.alarmTools input[type=datetime-local]{color-scheme:dark;max-width:190px}
+.alarmTools .sep{font-size:11px;color:var(--dim)}
+.alarmTabs{display:flex;gap:6px;margin-bottom:12px;padding:3px;border-radius:11px;
+  border:1px solid var(--line);background:rgba(255,255,255,.02);width:fit-content}
+.alarmTab{height:28px;padding:0 20px;border-radius:8px;border:1px solid transparent;
+  background:transparent;color:var(--muted);font-size:12px;transition:background .15s,color .15s,border-color .15s}
+.alarmTab:hover{color:var(--text)}
+.alarmTab.active{background:rgba(61,220,151,.14);border-color:rgba(61,220,151,.35);
+  color:#d9ffee;font-weight:600}
+.alarmMeta{margin-bottom:8px;font-size:11px;color:var(--dim)}
 .alarmList{display:flex;flex-direction:column;gap:8px;max-height:352px;overflow:auto;padding-right:2px}
+.alarmPager{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:6px;margin-top:10px}
+.alarmPager:empty{display:none}
+.alarmPager button{min-width:30px;height:28px;padding:0 9px;border-radius:8px;
+  border:1px solid var(--line2);background:rgba(255,255,255,.03);color:var(--muted);font-size:11.5px}
+.alarmPager button:hover:not(:disabled){border-color:#3a475c;color:var(--text)}
+.alarmPager button.active{border-color:rgba(61,220,151,.45);background:rgba(61,220,151,.14);
+  color:#d9ffee;font-weight:600}
+.alarmPager button:disabled{opacity:.4;cursor:not-allowed}
+.alarmPager .dots{color:var(--dim);font-size:11px;padding:0 2px}
 .alarmItem{display:flex;gap:10px;padding:10px 11px;border-radius:11px;border:1px solid var(--line);background:rgba(255,255,255,.022)}
 .alarmItem .mark{width:3px;border-radius:4px;background:var(--dim);flex:none}
 .alarmItem.warning .mark{background:var(--warn)}
@@ -568,11 +590,25 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
       <div class="cardHead">
         <div>
           <h2>告警</h2>
-          <small>alarm · 主动上报</small>
+          <small>alarm · 实时上报 + 历史查询（保留 30 天）</small>
         </div>
-        <button id="btnAlarmClear" class="btn" style="height:28px;font-size:11px">清空</button>
       </div>
+      <div class="alarmTabs">
+        <button class="alarmTab active" data-alarm-tab="live">当前</button>
+        <button class="alarmTab" data-alarm-tab="history">历史</button>
+      </div>
+      <div id="alarmFilter" class="alarmTools hide">
+        <select id="alarmDeviceSel" title="按设备过滤">
+          <option value="">全部设备</option>
+        </select>
+        <input id="alarmFrom" type="datetime-local" title="开始时间">
+        <span class="sep">至</span>
+        <input id="alarmTo" type="datetime-local" title="结束时间">
+        <button id="btnAlarmQuery" class="btn" style="height:31px;font-size:11.5px">查询</button>
+      </div>
+      <div id="alarmMeta" class="alarmMeta">实时接收中 · 共 0 条</div>
       <div id="alarmList" class="alarmList"><div class="emptyState">暂无告警</div></div>
+      <div id="alarmPager" class="alarmPager"></div>
     </section>
     </main><!-- /mainArea -->
   </div><!-- /layout -->
@@ -650,7 +686,9 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
    'dDisk', 'dUsb', 'dVideo', 'dRec', 'stateTime', 'autoState', 'btnState', 'btnCapability', 'videoEl',
    'videoEmpty', 'videoHint', 'btnVideoAction', 'btnVideoStop', 'btnVideoSound',
    'btnMic', 'voiceCard', 'micMeterFill',
-   'videoMsg', 'alarmList', 'btnAlarmClear', 'carStatus', 'servoStatus', 'servoEnable',
+   'videoMsg', 'alarmList', 'alarmFilter', 'alarmPager', 'alarmDeviceSel',
+   'alarmFrom', 'alarmTo', 'alarmMeta', 'btnAlarmQuery',
+   'carStatus', 'servoStatus', 'servoEnable',
    'userName', 'btnLogout',
    'recordBadge', 'recordActive', 'recFilename', 'recStartedAt', 'recDuration',
    'btnRecordStart', 'btnRecordStop', 'recordMsg', 'btnRecordList',
@@ -671,6 +709,9 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
       list: [], usedBytes: 0, limitBytes: 0, durationTimer: null,
       pendingStart: null, pendingStop: null, pendingList: null, pendingDelete: null },
     player: { pc: null, location: '', pending: null, filename: '' },
+    alarm: { tab: 'live', loading: false, pageSize: 30,
+      live: [], livePage: 1,
+      history: { items: [], page: 1, pages: 0, total: 0, loaded: false, filter: null } },
     autoTimer: null, statePending: null, offline: {} };
   var reconnectTimer = null, mqtt;
   var CLIENT_ID = 'walle-web-' + Math.random().toString(16).slice(2, 10);
@@ -1285,28 +1326,217 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
     }
     queryState();
   }
+  // ---------------------------------------------------------------- 告警
+  function alarmApi(path, params) {
+    var qs = [];
+    params = params || {};
+    Object.keys(params).forEach(function (k) {
+      var v = params[k];
+      if (v === '' || v === null || v === undefined) return;
+      qs.push(encodeURIComponent(k) + '=' + encodeURIComponent(v));
+    });
+    return fetch('/api' + path + (qs.length ? '?' + qs.join('&') : ''), {
+      headers: { 'Authorization': 'Bearer ' + (sessionStorage.getItem(TOKEN_KEY) || '') }
+    }).then(function (res) {
+      return res.json().catch(function () { return {}; }).then(function (data) {
+        if (!res.ok) throw new Error(data.message || ('HTTP ' + res.status));
+        return data;
+      });
+    });
+  }
+  function alarmRowEl(row) {
+    var item = document.createElement('div');
+    item.className = 'alarmItem ' + (row.level || 'info');
+    var mark = document.createElement('div'); mark.className = 'mark';
+    var txt = document.createElement('div'); txt.className = 'txt';
+    var devLine = document.createElement('div'); devLine.className = 'dev';
+    devLine.textContent = row.hostname || row.device || '—';
+    var title = document.createElement('b');
+    title.textContent = row.message || ((row.event || 'alarm') + ' · ' + (row.metric || ''));
+    var sub = document.createElement('p');
+    sub.textContent = [row.event, row.level, row.metric, row.alarm_type].filter(Boolean).join(' · ');
+    var time = document.createElement('time');
+    var when = row.occurred_text || '';
+    time.textContent = when ? when.slice(11, 19) : '';
+    if (when) item.title = when + (row.device ? ' · ' + row.device : '');
+    txt.appendChild(devLine); txt.appendChild(title); txt.appendChild(sub);
+    item.appendChild(mark); item.appendChild(txt); item.appendChild(time);
+    return item;
+  }
+  function alarmEmpty(text) {
+    var empty = document.createElement('div');
+    empty.className = 'emptyState';
+    empty.textContent = text;
+    el.alarmList.innerHTML = '';
+    el.alarmList.appendChild(empty);
+    el.alarmPager.innerHTML = '';
+  }
+  function setAlarmMeta(text) { el.alarmMeta.textContent = text; }
+  function setAlarmTab(name) {
+    ui.alarm.tab = name === 'history' ? 'history' : 'live';
+    Array.prototype.forEach.call(document.querySelectorAll('.alarmTab'), function (btn) {
+      btn.classList.toggle('active', btn.getAttribute('data-alarm-tab') === ui.alarm.tab);
+    });
+    el.alarmFilter.classList.toggle('hide', ui.alarm.tab !== 'history');
+    if (ui.alarm.tab === 'live') renderLiveAlarms();
+    else if (!ui.alarm.history.loaded) queryAlarms(1);
+    else renderHistoryPage();
+  }
+  function renderLivePager(pages, page) {
+    el.alarmPager.innerHTML = '';
+    if (pages <= 1) return;
+    var prev = document.createElement('button');
+    prev.textContent = '上一页';
+    prev.disabled = page <= 1;
+    prev.addEventListener('click', function () { ui.alarm.livePage = page - 1; renderLiveAlarms(); });
+    var next = document.createElement('button');
+    next.textContent = '下一页';
+    next.disabled = page >= pages;
+    next.addEventListener('click', function () { ui.alarm.livePage = page + 1; renderLiveAlarms(); });
+    el.alarmPager.appendChild(prev);
+    el.alarmPager.appendChild(next);
+  }
+  function renderLiveAlarms() {
+    var rows = ui.alarm.live, size = ui.alarm.pageSize;
+    var pages = Math.ceil(rows.length / size);
+    if (ui.alarm.livePage > pages) ui.alarm.livePage = pages || 1;
+    var page = ui.alarm.livePage;
+    el.alarmList.innerHTML = '';
+    if (!rows.length) alarmEmpty('暂无告警');
+    else rows.slice((page - 1) * size, page * size).forEach(function (row) {
+      el.alarmList.appendChild(alarmRowEl(row));
+    });
+    setAlarmMeta('实时接收中 · 共 ' + rows.length + ' 条' +
+      (pages > 1 ? ' · 第 ' + page + '/' + pages + ' 页' : ''));
+    renderLivePager(pages, page);
+  }
+  function renderHistoryPager() {
+    var h = ui.alarm.history;
+    el.alarmPager.innerHTML = '';
+    if (h.pages <= 1) return;
+    var marks = [];
+    for (var i = 1; i <= h.pages; i++) {
+      if (i === 1 || i === h.pages || Math.abs(i - h.page) <= 2) marks.push(i);
+      else if (marks[marks.length - 1] !== '...') marks.push('...');
+    }
+    marks.forEach(function (p) {
+      if (p === '...') {
+        var dots = document.createElement('span');
+        dots.className = 'dots';
+        dots.textContent = '…';
+        el.alarmPager.appendChild(dots);
+        return;
+      }
+      var btn = document.createElement('button');
+      btn.textContent = '第' + p + '页';
+      if (p === h.page) btn.className = 'active';
+      btn.addEventListener('click', function () {
+        if (p !== h.page) queryAlarms(p);
+      });
+      el.alarmPager.appendChild(btn);
+    });
+  }
+  function renderHistoryPage() {
+    var h = ui.alarm.history, filter = h.filter || {};
+    el.alarmList.innerHTML = '';
+    if (!h.items.length) alarmEmpty('该时间范围内暂无告警');
+    h.items.forEach(function (row) { el.alarmList.appendChild(alarmRowEl(row)); });
+    setAlarmMeta('共 ' + h.total + ' 条 · 第 ' + (h.pages ? h.page : 0) + '/' + h.pages + ' 页 · ' +
+      (filter.device ? '设备 ' + filter.device : '全部设备') + ' · ' +
+      (filter.from || filter.to ? '已按时间过滤' : '最近 30 天'));
+    renderHistoryPager();
+  }
+  function loadAlarmDevices() {
+    return alarmApi('/alarms/devices').then(function (data) {
+      var seen = {}, opts = [['', '全部设备']];
+      (data.data || []).forEach(function (d) {
+        if (!d.device || seen[d.device]) return;
+        seen[d.device] = true;
+        opts.push([d.device, (d.hostname || d.device) + ' · ' + d.count + ' 条']);
+      });
+      Object.keys(ui.devices).forEach(function (d) {
+        if (seen[d]) return;
+        seen[d] = true;
+        var info = ui.devices[d] || {};
+        opts.push([d, (info.hostname || d) + (info.online ? ' · 在线' : ' · 离线')]);
+      });
+      var current = el.alarmDeviceSel.value;
+      el.alarmDeviceSel.innerHTML = '';
+      opts.forEach(function (pair) {
+        var option = document.createElement('option');
+        option.value = pair[0];
+        option.textContent = pair[1];
+        el.alarmDeviceSel.appendChild(option);
+      });
+      el.alarmDeviceSel.value = (seen[current] || current === '') ? current : '';
+    }).catch(function () {});
+  }
+  function localInputEpoch(value) {
+    if (!value) return '';
+    var ts = new Date(value).getTime();
+    return isNaN(ts) ? '' : Math.floor(ts / 1000);
+  }
+  function queryAlarms(page) {
+    if (ui.alarm.loading) return;
+    page = Math.max(1, parseInt(page, 10) || 1);
+    if (page === 1) {
+      ui.alarm.history.filter = {
+        device: el.alarmDeviceSel.value,
+        from: localInputEpoch(el.alarmFrom.value),
+        to: localInputEpoch(el.alarmTo.value)
+      };
+    }
+    var filter = ui.alarm.history.filter || {};
+    var params = { page: page, limit: ui.alarm.pageSize };
+    for (var k in filter) if (filter[k] !== '') params[k] = filter[k];
+    ui.alarm.loading = true;
+    el.btnAlarmQuery.disabled = true;
+    alarmEmpty('查询中…');
+    alarmApi('/alarms', params).then(function (data) {
+      var h = ui.alarm.history;
+      h.items = data.items || [];
+      h.total = data.total || 0;
+      h.pages = data.pages || 0;
+      h.page = data.page || page;
+      h.loaded = true;
+      if (ui.alarm.tab === 'history') renderHistoryPage();
+    }).catch(function (err) {
+      var h = ui.alarm.history;
+      h.items = [];
+      h.total = 0;
+      h.pages = 0;
+      h.page = 1;
+      h.loaded = true;
+      if (ui.alarm.tab === 'history') {
+        alarmEmpty(err.message || '查询失败');
+        setAlarmMeta('查询失败：' + (err.message || '未知错误'));
+        renderHistoryPager();
+      }
+    }).then(function () {
+      ui.alarm.loading = false;
+      el.btnAlarmQuery.disabled = false;
+    });
+  }
   function onAlarm(dev, data) {
-    if (dev !== cfg.device) return;
     var key = [dev, data.event, data.metric, data.alarm_type, data.timestamp, data.message].join('|');
     if (ui.lastAlarm && ui.lastAlarm.key === key && Date.now() - ui.lastAlarm.at < 2000) return;
     ui.lastAlarm = { key: key, at: Date.now() };
-    var empty = el.alarmList.querySelector('.emptyState');
-    if (empty) empty.remove();
-    var item = document.createElement('div');
-    item.className = 'alarmItem ' + (data.level || 'info');
-    var mark = document.createElement('div'); mark.className = 'mark';
-    var txt = document.createElement('div'); txt.className = 'txt';
-    var title = document.createElement('b'); title.textContent = data.message || (data.event + ' · ' + (data.metric || ''));
-    var sub = document.createElement('p');
-    var devName = data.hostname || (ui.devices[dev] && ui.devices[dev].hostname) || data.device_id || dev;
-    var devLine = document.createElement('div'); devLine.className = 'dev'; devLine.textContent = devName;
-    sub.textContent = [data.event, data.level, data.metric, data.alarm_type].filter(Boolean).join(' · ');
-    var time = document.createElement('time');
-    time.textContent = data.datetime ? data.datetime.slice(11, 19) : nowTime();
-    txt.appendChild(devLine); txt.appendChild(title); txt.appendChild(sub);
-    item.appendChild(mark); item.appendChild(txt); item.appendChild(time);
-    el.alarmList.insertBefore(item, el.alarmList.firstChild);
-    while (el.alarmList.children.length > 200) el.alarmList.removeChild(el.alarmList.lastChild);
+    var row = {
+      device: dev,
+      hostname: data.hostname || (ui.devices[dev] && ui.devices[dev].hostname) || data.device_id,
+      event: data.event,
+      level: data.level || 'info',
+      metric: data.metric,
+      alarm_type: data.alarm_type,
+      message: data.message,
+      occurred_text: data.datetime || ''
+    };
+    ui.alarm.live.unshift(row);
+    while (ui.alarm.live.length > 300) ui.alarm.live.pop();
+    if (ui.alarm.tab === 'live' && ui.alarm.livePage === 1) renderLiveAlarms();
+    else if (ui.alarm.tab === 'live') {
+      setAlarmMeta('实时接收中 · 共 ' + ui.alarm.live.length + ' 条（新告警在第 1 页）');
+    }
   }
 
   // ---------------------------------------------------------------- 录像
@@ -2441,8 +2671,12 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
     if (ui.mic.on) stopMic(true);
     else startMic();
   });
-  el.btnAlarmClear.addEventListener('click', function () {
-    el.alarmList.innerHTML = '<div class="emptyState">暂无告警</div>';
+  Array.prototype.forEach.call(document.querySelectorAll('.alarmTab'), function (btn) {
+    btn.addEventListener('click', function () { setAlarmTab(btn.getAttribute('data-alarm-tab')); });
+  });
+  el.btnAlarmQuery.addEventListener('click', function () {
+    ui.alarm.history.loaded = false;
+    queryAlarms(1);
   });
 
   // 录像控制按钮
@@ -2539,7 +2773,10 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
     }
     navItems.forEach(function (btn) {
       btn.addEventListener('click', function () {
-        switchTab(btn.getAttribute('data-tab'));
+        var tab = btn.getAttribute('data-tab');
+        switchTab(tab);
+        // 进入告警页时按当前子 tab 刷新：当前页重绘实时数据，历史页沿用已查结果
+        if (tab === 'alarm') setAlarmTab(ui.alarm.tab);
       });
     });
 
@@ -2603,7 +2840,7 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
     }
   })();
 
-  rebuildMqtt(); renderDevices();
+  rebuildMqtt(); renderDevices(); loadAlarmDevices(); setAlarmTab('live');
 })();
 </script>
 </body>

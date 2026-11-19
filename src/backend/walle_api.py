@@ -27,6 +27,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -67,10 +68,10 @@ SESSION_TTL = 12 * 3600
 SESSIONS = {}
 
 
-def new_session(username):
+def new_session(username, role="administrator"):
     token = secrets.token_urlsafe(32)
     now = time.time()
-    SESSIONS[token] = (username, now + SESSION_TTL, now)
+    SESSIONS[token] = (username, now + SESSION_TTL, now, role)
     return token
 
 
@@ -126,6 +127,52 @@ def load_media_secret():
 
 
 MEDIA_SECRET = load_media_secret()
+
+
+def conf_value(key, default=""):
+    """读取配置：环境变量优先，其次 etc/walle.conf。"""
+    value = os.environ.get(key, "").strip()
+    if value:
+        return value
+    if os.path.isfile(CONF_PATH):
+        with open(CONF_PATH, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line.startswith(key + "="):
+                    return line.split("=", 1)[1].strip()
+    return default
+
+
+def load_alarm_retention_days():
+    raw = conf_value("WALLE_ALARM_RETENTION_DAYS", "30")
+    try:
+        days = int(raw)
+    except ValueError:
+        return 30
+    return days if days > 0 else 30
+
+
+# 告警接入：EMQX 规则引擎通过回环地址 POST，用共享 token 再做一层校验
+ALARM_INGEST_TOKEN = conf_value("WALLE_INGEST_TOKEN")
+ALARM_RETENTION_DAYS = load_alarm_retention_days()
+ALARM_TABLE_SQL = """CREATE TABLE IF NOT EXISTS alarms (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant        TEXT NOT NULL,
+    device        TEXT NOT NULL,
+    hostname      TEXT,
+    device_uuid   TEXT,
+    ip            TEXT,
+    event         TEXT,
+    level         TEXT,
+    metric        TEXT,
+    alarm_type    TEXT,
+    message       TEXT,
+    occurred_at   INTEGER NOT NULL,
+    occurred_text TEXT,
+    received_at   INTEGER NOT NULL,
+    detail        TEXT,
+    dedupe        TEXT NOT NULL UNIQUE
+)"""
 
 
 def get_media_secret():
@@ -348,17 +395,102 @@ def init_db():
                 "INSERT OR IGNORE INTO settings(key, value) VALUES ('media_secret', ?)",
                 (MEDIA_SECRET,),
             )
+        conn.execute(ALARM_TABLE_SQL)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_alarms_tenant_time "
+            "ON alarms(tenant, occurred_at DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_alarms_device_time "
+            "ON alarms(device, occurred_at DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_alarms_time ON alarms(occurred_at DESC)"
+        )
+        conn.execute("PRAGMA journal_mode=WAL")
 
 
 @contextlib.contextmanager
 def db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=5)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=5000")
     try:
         yield conn
         conn.commit()
     finally:
         conn.close()
+
+
+# ---------- 告警持久化 ----------
+_alarm_cleanup_at = 0.0
+_alarm_cleanup_lock = threading.Lock()
+
+
+def alarm_text(data, key, limit=200):
+    value = data.get(key)
+    if value is None:
+        return ""
+    return str(value).strip()[:limit]
+
+
+def alarm_epoch(value):
+    """把秒/毫秒/微秒时间戳或 ISO 时间统一成 epoch 秒；无法识别返回 None。"""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        ts = float(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if re.fullmatch(r"\d+(?:\.\d+)?", text):
+            ts = float(text)
+        else:
+            try:
+                parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+            return int(parsed.timestamp())
+    else:
+        return None
+    while ts > 1e12:
+        ts /= 1000
+    # 设备时钟异常时（2000 年以前或未来一年以上）按收到时间处理
+    if ts < 946684800 or ts > time.time() + 366 * 86400:
+        return None
+    return int(ts)
+
+
+def alarm_time_fields(data, received_at):
+    """从 payload 提取 occurred_at 与展示文本，缺失时回退到服务端收到时间。"""
+    raw = None
+    for key in ("timestamp", "ts", "occurred_at", "time"):
+        value = data.get(key)
+        if value not in (None, ""):
+            raw = value
+            break
+    occurred_at = alarm_epoch(raw) or received_at
+    text = data.get("datetime")
+    if not isinstance(text, str) or not text.strip():
+        try:
+            text = datetime.fromtimestamp(occurred_at).strftime("%Y-%m-%d %H:%M:%S")
+        except (OSError, OverflowError, ValueError):
+            text = ""
+    return raw, occurred_at, text.strip()
+
+
+def cleanup_alarms():
+    """按 occurred_at 清理超过保留期的告警，最多每小时执行一次。"""
+    global _alarm_cleanup_at
+    now = time.time()
+    with _alarm_cleanup_lock:
+        if now - _alarm_cleanup_at < 3600:
+            return
+        _alarm_cleanup_at = now
+    cutoff = int(now - ALARM_RETENTION_DAYS * 86400)
+    with db() as conn:
+        conn.execute("DELETE FROM alarms WHERE occurred_at < ?", (cutoff,))
 
 
 def emqx(method, path, body=None, token=None):
@@ -553,8 +685,13 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------- 路由 ----------
     def do_GET(self):
-        if self.path == "/api/health":
+        path = urllib.parse.urlsplit(self.path).path
+        if path == "/api/health":
             return self._json(200, {"status": "ok"})
+        if path == "/api/alarms":
+            return self.list_alarms()
+        if path == "/api/alarms/devices":
+            return self.list_alarm_devices()
         if self.path.startswith("/api/rtc-token"):
             return self.rtc_token()
         if self.path == "/api/users":
@@ -572,7 +709,10 @@ class Handler(BaseHTTPRequestHandler):
         self._json(404, {"message": "not found"})
 
     def do_POST(self):
-        if self.path == "/api/srs/hook":
+        path = urllib.parse.urlsplit(self.path).path
+        if path == "/api/internal/alarms":
+            return self.ingest_alarm()
+        if path == "/api/srs/hook":
             return self.srs_hook()
         if self.path == "/api/admin/stream-secret/regenerate":
             return self.regenerate_stream_secret()
@@ -637,6 +777,207 @@ class Handler(BaseHTTPRequestHandler):
         self.log_message("SRS 拒绝推流：app=%s stream=%s ip=%s token=%s",
                          app, stream, body.get("ip"), "yes" if token else "no")
         return self._json(403, {"code": 403, "message": "invalid credential"})
+
+    # ---------- 告警接入与查询 ----------
+    def ingest_alarm(self):
+        """EMQX 规则引擎回调：把 walle/{tenant}/{device}/v1/alarm 落库。
+
+        只接受回环地址并校验共享 token；nginx 另有 /api/internal/ deny 规则。
+        """
+        if self.client_address[0] not in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+            return self._json(403, {"message": "forbidden"})
+        if not ALARM_INGEST_TOKEN:
+            return self._json(503, {"message": "未配置 WALLE_INGEST_TOKEN，拒绝告警接入"})
+        supplied = self.headers.get("X-Walle-Ingest") or ""
+        if not hmac.compare_digest(supplied.encode(), ALARM_INGEST_TOKEN.encode()):
+            return self._json(403, {"message": "invalid ingest token"})
+        body = self._body()
+        if not isinstance(body, dict):
+            return self._json(400, {"message": "请求体不是合法 JSON"})
+        topic = str(body.get("topic") or "").strip()
+        payload = body.get("payload")
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError:
+                return self._json(400, {"message": "payload 不是合法 JSON"})
+        if not isinstance(payload, dict):
+            return self._json(400, {"message": "payload 必须是 JSON 对象"})
+        parts = topic.split("/")
+        if len(parts) != 5 or parts[0] != "walle" or parts[3] != "v1" or parts[4] != "alarm":
+            return self._json(400, {"message": "topic 不符合 walle/{tenant}/{device}/v1/alarm"})
+        tenant, device = parts[1], parts[2]
+        if not valid_tenant(tenant) or not device or any(ord(ch) < 0x20 for ch in device):
+            return self._json(400, {"message": "topic 中的租户或设备名不合法"})
+
+        received_at = int(time.time())
+        raw_time, occurred_at, occurred_text = alarm_time_fields(payload, received_at)
+        event = alarm_text(payload, "event")
+        level = alarm_text(payload, "level", 32).lower() or "info"
+        metric = alarm_text(payload, "metric")
+        alarm_type = alarm_text(payload, "alarm_type") or alarm_text(payload, "type")
+        message = alarm_text(payload, "message", 500)
+        dedupe = hashlib.sha1(
+            "\x1f".join([
+                tenant,
+                device,
+                event,
+                metric,
+                alarm_type,
+                "" if raw_time is None else str(raw_time),
+                message,
+            ]).encode()
+        ).hexdigest()
+        with db() as conn:
+            cur = conn.execute(
+                """INSERT OR IGNORE INTO alarms
+                   (tenant, device, hostname, device_uuid, ip, event, level, metric,
+                    alarm_type, message, occurred_at, occurred_text, received_at, detail, dedupe)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    tenant,
+                    device,
+                    alarm_text(payload, "hostname") or None,
+                    alarm_text(payload, "device_id") or alarm_text(payload, "uuid") or None,
+                    alarm_text(payload, "ip", 64) or None,
+                    event or None,
+                    level,
+                    metric or None,
+                    alarm_type or None,
+                    message or None,
+                    occurred_at,
+                    occurred_text or None,
+                    received_at,
+                    json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                    dedupe,
+                ),
+            )
+            duplicate = cur.rowcount == 0
+        try:
+            cleanup_alarms()
+        except sqlite3.Error as exc:
+            self.log_message("清理过期告警失败: %s", exc)
+        return self._json(200, {"ok": True, "duplicate": duplicate, "id": cur.lastrowid})
+
+    def _alarm_scope(self):
+        """返回 (鉴权记录, tenant 过滤值)；客户只能看自己租户，管理员为 None。"""
+        record = self._session()
+        if not record:
+            return None, None
+        if record[3] == "administrator":
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            tenant = (query.get("tenant") or [""])[0].strip()
+            return record, tenant or None
+        return record, record[0]
+
+    def list_alarms(self):
+        record, tenant = self._alarm_scope()
+        if not record:
+            return self._deny()
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+
+        def first(key):
+            return (query.get(key) or [""])[0].strip()
+
+        where, params = [], []
+        if tenant:
+            where.append("tenant = ?")
+            params.append(tenant)
+        device = first("device")
+        if device:
+            where.append("device = ?")
+            params.append(device)
+        level = first("level")
+        if level:
+            where.append("level = ?")
+            params.append(level)
+        time_from = alarm_epoch(first("from"))
+        if time_from is not None:
+            where.append("occurred_at >= ?")
+            params.append(time_from)
+        time_to = alarm_epoch(first("to"))
+        if time_to is not None:
+            where.append("occurred_at <= ?")
+            params.append(time_to)
+
+        try:
+            limit = int(first("limit") or 30)
+        except ValueError:
+            limit = 30
+        limit = min(max(limit, 1), 30)
+
+        with db() as conn:
+            total = conn.execute(
+                "SELECT COUNT(*) FROM alarms" + (" WHERE " + " AND ".join(where) if where else ""),
+                params,
+            ).fetchone()[0]
+            pages = (total + limit - 1) // limit if total else 0
+            try:
+                page = int(first("page") or 1)
+            except ValueError:
+                page = 1
+            page = min(max(page, 1), pages or 1)
+            rows = conn.execute(
+                "SELECT * FROM alarms"
+                + (" WHERE " + " AND ".join(where) if where else "")
+                + " ORDER BY occurred_at DESC, id DESC LIMIT ? OFFSET ?",
+                params + [limit, (page - 1) * limit],
+            ).fetchall()
+
+        items = [
+            {
+                "id": row["id"],
+                "tenant": row["tenant"],
+                "device": row["device"],
+                "hostname": row["hostname"],
+                "device_uuid": row["device_uuid"],
+                "ip": row["ip"],
+                "event": row["event"],
+                "level": row["level"],
+                "metric": row["metric"],
+                "alarm_type": row["alarm_type"],
+                "message": row["message"],
+                "occurred_at": row["occurred_at"],
+                "occurred_text": row["occurred_text"],
+                "received_at": row["received_at"],
+            }
+            for row in rows
+        ]
+        return self._json(200, {
+            "items": items,
+            "total": total,
+            "page": page,
+            "pages": pages,
+            "page_size": limit,
+        })
+
+    def list_alarm_devices(self):
+        record, tenant = self._alarm_scope()
+        if not record:
+            return self._deny()
+        where, params = [], []
+        if tenant:
+            where.append("tenant = ?")
+            params.append(tenant)
+        with db() as conn:
+            rows = conn.execute(
+                "SELECT device, MAX(hostname) AS hostname, COUNT(*) AS count, "
+                "MAX(occurred_at) AS last_at FROM alarms"
+                + (" WHERE " + " AND ".join(where) if where else "")
+                + " GROUP BY device ORDER BY last_at DESC",
+                params,
+            ).fetchall()
+        return self._json(200, {
+            "data": [
+                {
+                    "device": row["device"],
+                    "hostname": row["hostname"],
+                    "count": row["count"],
+                    "last_at": row["last_at"],
+                }
+                for row in rows
+            ]
+        })
 
     # ---------- 流鉴权凭据 ----------
     def rtc_token(self):
@@ -762,7 +1103,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._deny()
         return self._json(200, {
             "username": record[0],
-            "role": "administrator",
+            "role": record[3],
             "login_at": record[2],
             "expires_at": record[1],
         })
@@ -813,7 +1154,8 @@ class Handler(BaseHTTPRequestHandler):
         return session_record(auth[7:].strip())
 
     def _is_admin(self):
-        return self._session() is not None
+        record = self._session()
+        return record is not None and record[3] == "administrator"
 
     def _deny(self):
         return self._json(401, {"message": "未登录或会话已失效，请以管理员身份登录"})
@@ -833,7 +1175,11 @@ class Handler(BaseHTTPRequestHandler):
         role = (data or {}).get("role")
         if role and role != "administrator":
             return self._json(403, {"message": "该 Dashboard 账号不是管理员，不能管理用户"})
-        return self._json(200, {"username": username, "token": new_session(username), "role": "administrator"})
+        return self._json(200, {
+            "username": username,
+            "token": new_session(username, "administrator"),
+            "role": "administrator",
+        })
 
     def login(self):
         """客户登录：密码交给 EMQX 校验，角色必须是「客户」。"""
@@ -854,7 +1200,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(403, {"message": "该账号未在 walle 登记角色，不能登录"})
         if row["role"] != "客户":
             return self._json(403, {"message": "该账号角色为「设备」，不能登录"})
-        return self._json(200, {"username": username, "role": row["role"], "token": new_session(username)})
+        return self._json(200, {
+            "username": username,
+            "role": row["role"],
+            "token": new_session(username, row["role"]),
+        })
 
     def list_users(self):
         if not self._is_admin():

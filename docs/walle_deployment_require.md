@@ -224,6 +224,81 @@ curl -s -u "$KEY:$SECRET" \
 
 `/api/v5/nodes` 返回 `edition: Enterprise`。生产环境需替换为正式 license。
 
+### 6.7 配置告警落库规则（必须）
+
+告警历史依赖 EMQX 规则引擎把 `walle/{tenant}/{device}/v1/alarm` 回调给 `walle_api.py`。先在 `etc/walle.conf` 中配置共享 token（与 8.2 节一起完成）：
+
+```bash
+TOKEN=$(python3 -c "import secrets; print(secrets.token_hex(24))")
+grep -q '^WALLE_INGEST_TOKEN=' etc/walle.conf \
+  && sed -i "s|^WALLE_INGEST_TOKEN=.*|WALLE_INGEST_TOKEN=$TOKEN|" etc/walle.conf \
+  || printf '\nWALLE_INGEST_TOKEN=%s\n' "$TOKEN" >> etc/walle.conf
+chmod 600 etc/walle.conf
+```
+
+然后创建 Connector、Action、Rule（EMQX 6.3.2 的 REST 接口）：
+
+```bash
+KEY=$(jq -r .api_key etc/emqx_api_key.json)
+SECRET=$(jq -r .api_secret etc/emqx_api_key.json)
+TOKEN=$(grep -E '^WALLE_INGEST_TOKEN=' etc/walle.conf | cut -d= -f2-)
+
+# 1) HTTP Connector：回环地址 + 接入 token
+curl -s -X POST -u "$KEY:$SECRET" http://127.0.0.1:18083/api/v5/connectors \
+  -H 'Content-Type: application/json' -d "{
+    \"type\": \"http\",
+    \"name\": \"walle_alarm_http\",
+    \"url\": \"http://127.0.0.1:9000\",
+    \"pool_size\": 4,
+    \"headers\": {
+      \"content-type\": \"application/json\",
+      \"x-walle-ingest\": \"$TOKEN\"
+    }
+  }" | jq .
+
+# 2) HTTP Action：POST /api/internal/alarms
+curl -s -X POST -u "$KEY:$SECRET" http://127.0.0.1:18083/api/v5/actions \
+  -H 'Content-Type: application/json' -d "$(jq -n --arg token "$TOKEN" '{
+    type: "http",
+    name: "walle_alarm_hook",
+    connector: "walle_alarm_http",
+    parameters: {
+      path: "/api/internal/alarms",
+      method: "post",
+      headers: { "content-type": "application/json", "x-walle-ingest": $token },
+      body: "{\"topic\":\"${topic}\",\"payload\":${payload}}"
+    },
+    resource_opts: { request_ttl: "10s" }
+  }')" | jq .
+
+# 3) Rule：订阅所有租户/设备的告警主题
+curl -s -X POST -u "$KEY:$SECRET" http://127.0.0.1:18083/api/v5/rules \
+  -H 'Content-Type: application/json' -d '{
+    "id": "walle_alarm_persist",
+    "sql": "SELECT topic, payload FROM \"walle/+/+/v1/alarm\"",
+    "actions": ["http:walle_alarm_hook"],
+    "enable": true,
+    "description": "walle 告警落库：转发到 walle_api"
+  }' | jq .
+```
+
+> 也可在 Dashboard 操作：集成 → 连接器（HTTP）→ 动作（HTTP）→ 规则。Action 的 body 模板必须是
+> `{"topic":"${topic}","payload":${payload}}`，否则后端无法解析。
+
+验证：
+
+1. `curl -s -u "$KEY:$SECRET" http://127.0.0.1:18083/api/v5/rules/walle_alarm_persist | jq .` 返回规则且 `enable=true`。
+2. 发布一条测试告警：
+   ```bash
+   curl -s -X POST -u "$KEY:$SECRET" http://127.0.0.1:18083/api/v5/publish \
+     -H 'Content-Type: application/json' \
+     -d '{"topic":"walle/<客户用户名>/<设备用户名>/v1/alarm",
+          "payload":"{\"event\":\"test\",\"level\":\"info\",\"message\":\"部署验证\"}",
+          "qos":1}' | jq .
+   ```
+3. `log/walle-api.log` 出现 `POST /api/internal/alarms 200`，登录客户控制台可在「告警信息」中查到该记录。
+4. 若返回 403，检查 Action/Connector 的 `x-walle-ingest` 与 `etc/walle.conf` 是否一致；若返回 503，说明后端未配置 `WALLE_INGEST_TOKEN`。
+
 ---
 
 ## 7. SRS 7.0.215
@@ -375,6 +450,14 @@ cp etc/walle.conf.example etc/walle.conf
 vi etc/walle.conf
 ```
 
+必填项：
+
+| 键 | 说明 |
+|---|---|
+| `EMQX_API_KEY` / `EMQX_API_SECRET` | 6.4 节创建的 API Key |
+| `WALLE_INGEST_TOKEN` | EMQX 规则引擎回调 walle_api 的共享 token，见 6.7 节；缺失时告警接入返回 503 |
+| `WALLE_ALARM_RETENTION_DAYS` | 可选，告警保留天数，默认 30 |
+
 > 说明：`etc/walle.conf`和`etc/nginx.conf`使用的 API Key 和 API Secret 可以不一样，可以在生成两套 API Key 和 API Secret 后，分别用于门户和 Nginx，比如 Nginx 的权限底一些，门户的权限高一些。这里使用一套。
 
 
@@ -393,7 +476,7 @@ vi etc/walle.service
 
 `scripts/deploy.sh` 依次完成 3 件事：
 
-1. 校验 `etc/walle.conf` 是否存在、非空，且 `EMQX_API_KEY` / `EMQX_API_SECRET` 已填入真实值（拒绝占位符）。
+1. 校验 `etc/walle.conf` 是否存在、非空，且 `EMQX_API_KEY` / `EMQX_API_SECRET` / `WALLE_INGEST_TOKEN` 已填入真实值（拒绝占位符）。
 2. 以 `scripts/walle.service.example` 为模板，渲染出 `scripts/walle.service`（替换仓库路径与服务用户）。
 3. 用 `sudo` 把 `walle.conf` 安装到 `/etc/walle/walle.conf`（权限 600）、`walle.service` 安装到 `/etc/systemd/system/walle.service`（权限 644），并执行 `systemctl daemon-reload`，最后打印关键信息。
 
@@ -452,7 +535,7 @@ echo $! > mqtt_demo.pid
 | 路径 | 作用 | 关键项 |
 |---|---|---|
 | `/etc/systemd/system/srs.service`（源文件 `etc/srs.service`） | SRS 服务 | `LimitNOFILE=10000`、`Restart=on-failure`、`User=gs` |
-| `/etc/walle/walle.conf`（源文件 `etc/walle.conf`） | 门户保密配置 | `EMQX_API_KEY`/`EMQX_API_SECRET`、`MEDIA_SERVER_SECRET`（与设备/App 一致），权限 600 |
+| `/etc/walle/walle.conf`（源文件 `etc/walle.conf`） | 门户保密配置 | `EMQX_API_KEY`/`EMQX_API_SECRET`、`MEDIA_SERVER_SECRET`、`WALLE_INGEST_TOKEN`，权限 600 |
 | `/etc/systemd/system/walle.service`（由 `scripts/walle.service` 安装） | 门户服务 | `Type=forking`、`EnvironmentFile`、8088 |
 | `/etc/emqx/emqx.conf` | EMQX 配置（deb 自带） | 默认 dashboard 账号、监听端口 |
 | `etc/srs.conf` | SRS 运行配置 | `max_connections 800`、8080/1985/9972、`rtc_server` |
@@ -460,7 +543,7 @@ echo $! > mqtt_demo.pid
 | `src/web/index.html` | 登录页 | 角色 Tab、`POST /api/login` 或 `/api/admin/login`、sessionStorage |
 | `src/web/home.html` | 角色路由 | 按 `walle_role` 跳 admin/user |
 | `src/web/admin.html` | 管理员控制台 | 5s 轮询 EMQX/SRS 接口 |
-| `src/web/user.html` | 普通用户控制台 | HTTP-FLV 播放、指令占位 |
+| `src/web/user.html` | 普通用户控制台 | HTTP-FLV 播放、实时/历史告警、设备与时间过滤 |
 | `scripts/start-walle.sh` | 门户启停 | start/stop/status |
 | `scripts/deploy.sh` | 门户部署/安装 | 校验 walle.conf、渲染并安装 walle.service |
 | `etc/emqx_api_key.json` | API 凭据 | 0600，`api_key`/`api_secret` |
@@ -497,6 +580,12 @@ curl -s -o /dev/null -w 'admin-login=%{http_code}\n' -X POST http://127.0.0.1:80
   -H 'Content-Type: application/json' -d '{"username":"<Dashboard账号>","password":"<密码>"}'
 # 未带 token 访问用户接口应为 401
 curl -s -o /dev/null -w 'users=%{http_code}\n' http://127.0.0.1:8088/api/users
+
+# 告警规则与内部接入：规则应 enable=true，外部访问 /api/internal/ 应为 403
+curl -s -u "$KEY:$SECRET" http://127.0.0.1:18083/api/v5/rules/walle_alarm_persist \
+  | jq -c '{id,enable,actions}'
+curl -s -o /dev/null -w 'internal=%{http_code}\n' -X POST http://127.0.0.1:8088/api/internal/alarms \
+  -H 'Content-Type: application/json' -d '{}'
 ```
 
 期望（有推流与 MQTT 测试客户端时）：
@@ -505,7 +594,7 @@ curl -s -o /dev/null -w 'users=%{http_code}\n' http://127.0.0.1:8088/api/users
 count=1；count=1；edition=Enterprise / version=6.3.2 / running；fields=113；authenticator count=0（或 N，无用户时为 0）
 total=1（live/test）；total>=1；exporter=200
 portal=200；flv=200 type=video/x-flv
-login=200；bad-login=401
+login=200；bad-login=401；internal=403；规则 enable=true
 ```
 
 浏览器侧：`http://<host>:8088/` 输入 EMQX 账号登录 → 管理员进入控制台、普通用户进入小车控制台 → 退出后回到登录页。
@@ -523,6 +612,7 @@ login=200；bad-login=401
 5. **默认凭据**：EMQX `admin/public`、默认 Erlang cookie 均不安全，必须修改。
 6. **API Key 注入风险**：能访问 8088 的人即可调用只读管理接口，生产应加 BFF 鉴权或限制来源 IP。
 7. **SRS 无录制持久化**：当前未启用 DVR；重建主机不会保留录制文件。
+8. **告警保留期**：默认保留 30 天，按设备上报时间 `occurred_at` 清理；可通过 `WALLE_ALARM_RETENTION_DAYS` 调整。规则/Connector/Action 与 `WALLE_INGEST_TOKEN` 任一变更后需同步另一端，否则告警接入返回 403。
 
 其余安全分析与演进项见 [walle_detiled_design.md](./walle_detiled_design.md) 第 13、14 节。
 
