@@ -924,7 +924,7 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
     keys.forEach(function (d) {
       var x = ui.devices[d] || {}, op = document.createElement('option');
       op.value = d;
-      op.textContent = (x.hostname || x.device_id || d) + (x.online ? ' · 在线' : ' · 未上报');
+      op.textContent = (x.hostname || x.device_id || d) + (x.online ? ' · 在线' : ' · 离线');
       el.deviceSelect.appendChild(op);
     });
     if (keys.indexOf(keep) >= 0) el.deviceSelect.value = keep;
