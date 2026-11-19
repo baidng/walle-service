@@ -37,7 +37,7 @@
   .menu-group-title .arrow { margin-left: auto; transition: transform .15s; font-size: 10px; }
   .menu-group.open .menu-group-title .arrow { transform: rotate(90deg); }
   .menu-group.open .menu-children { display: block; }
-  .menu-group.collapsed .menu-children { display: none; }
+  .menu-group:not(.open) .menu-children { display: none; }
   .menu-children { padding-left: 18px; margin-top: 4px; }
   .menu-children .menu-item { font-size: 13px; padding: 7px 10px; }
   .menu-item .ico { width: 18px; text-align: center; }
