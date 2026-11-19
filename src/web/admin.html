@@ -113,6 +113,30 @@
   .modal-msg { font-size:12px; color:var(--muted); margin-top:8px; }
   .modal-msg.err { color:var(--bad); }
   .modal-msg.ok { color:var(--ok); }
+
+  /* 管理员修改密码弹窗 */
+  .admin-modal { position:fixed; z-index:201; left:50%; top:50%; transform:translate(-50%,-50%);
+                 width:min(760px,92vw); background:#1b1f27; border:1px solid #3a4150;
+                 border-radius:10px; display:none; }
+  .admin-modal.show { display:block; }
+  .admin-modal-head { display:flex; justify-content:space-between; align-items:center;
+                      padding:18px 22px; border-bottom:1px solid #2a2f3a; }
+  .admin-modal-head h3 { margin:0; font-size:18px; }
+  .admin-modal-close { background:none; border:0; color:var(--muted); font-size:24px;
+                       line-height:1; cursor:pointer; }
+  .admin-modal-close:hover { color:var(--text); }
+  .admin-modal-body { padding:20px 22px 4px; }
+  .admin-field { display:block; margin-bottom:18px; }
+  .admin-field > span { display:block; margin-bottom:8px; font-size:14px; }
+  .admin-field em { color:#ff6b6b; font-style:normal; margin-left:2px; }
+  .admin-field input { width:100%; padding:9px 12px; background:#12151b; color:var(--text);
+                       border:1px solid #3a4150; border-radius:6px; font-size:14px; font-family:inherit; }
+  .admin-field input:focus { outline:none; border-color:var(--accent); }
+  .admin-modal-msg { min-height:18px; margin:0 0 8px; font-size:12px; color:var(--bad); }
+  .admin-modal-foot { display:flex; justify-content:flex-end; gap:10px; padding:8px 22px 20px; }
+  .admin-modal-submit { padding:8px 22px; border:0; border-radius:6px; background:#6c63ff;
+                        color:#fff; font-size:14px; cursor:pointer; font-family:inherit; }
+  .admin-modal-submit:hover { opacity:.9; }
 </style>
 </head>
 <body>
@@ -368,27 +392,19 @@
   <section class="panel" data-panel="sys-admin">
     <h2>管理员设置</h2>
     <p class="lead">当前登录的管理员账号（EMQX Dashboard 账号），修改密码后请使用新密码登录。</p>
-    <div class="grid">
-      <div class="card">
-        <h3>账号信息</h3>
-        <table>
-          <tbody>
-            <tr><th>用户名</th><td id="admin-username">-</td></tr>
-            <tr><th>角色</th><td><span class="tag ok">管理员</span></td></tr>
-            <tr><th>登录时间</th><td id="admin-login-at">-</td></tr>
-          </tbody>
-        </table>
-      </div>
-      <div class="card">
-        <h3>修改密码</h3>
-        <div class="user-form" style="flex-direction:column;align-items:stretch">
-          <input id="admin-old-pass" type="password" placeholder="当前密码" autocomplete="current-password" style="width:100%" />
-          <input id="admin-new-pass" type="password" placeholder="新密码（至少 6 位）" autocomplete="new-password" style="width:100%" />
-          <input id="admin-new-pass2" type="password" placeholder="确认新密码" autocomplete="new-password" style="width:100%" />
-          <button class="btn primary" id="admin-pass-submit">保存新密码</button>
-        </div>
-        <p class="sub" id="admin-pass-hint" style="margin-top:10px"></p>
-      </div>
+    <div class="card">
+      <table>
+        <thead><tr><th>用户名</th><th>备注</th><th>角色</th><th>权限范围</th><th>操作</th></tr></thead>
+        <tbody>
+          <tr>
+            <td id="admin-username">-</td>
+            <td>administrator</td>
+            <td>管理员</td>
+            <td>角色默认权限</td>
+            <td><button class="btn" id="admin-pwd-open">修改密码</button></td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   </section>
 
@@ -429,6 +445,30 @@
   </div>
   <video id="srs-preview-video" autoplay playsinline controls></video>
   <div class="modal-msg" id="srs-preview-msg">正在建立 WebRTC 连接…</div>
+</div>
+
+<div class="scrim" id="admin-pwd-scrim"></div>
+<div class="admin-modal" id="admin-pwd-modal">
+  <div class="admin-modal-head">
+    <h3>修改密码</h3>
+    <button class="admin-modal-close" id="admin-pwd-close" aria-label="关闭">×</button>
+  </div>
+  <div class="admin-modal-body">
+    <label class="admin-field"><span>密码<em>*</em></span>
+      <input id="admin-old-pass" type="password" autocomplete="current-password" />
+    </label>
+    <label class="admin-field"><span>新密码<em>*</em></span>
+      <input id="admin-new-pass" type="password" autocomplete="new-password" />
+    </label>
+    <label class="admin-field"><span>确认新密码<em>*</em></span>
+      <input id="admin-new-pass2" type="password" autocomplete="new-password" />
+    </label>
+    <p class="admin-modal-msg" id="admin-pass-hint"></p>
+  </div>
+  <div class="admin-modal-foot">
+    <button class="btn" id="admin-pwd-cancel">取消</button>
+    <button class="admin-modal-submit" id="admin-pwd-submit">确定</button>
+  </div>
 </div>
 
 <script>
@@ -934,7 +974,7 @@ document.getElementById("srs-streams-tbody").addEventListener("click", e => {
 });
 document.getElementById("srs-preview-close").addEventListener("click", closeSrsPreview);
 document.getElementById("srs-preview-scrim").addEventListener("click", closeSrsPreview);
-document.addEventListener("keydown", e => { if (e.key === "Escape") closeSrsPreview(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape") { closeSrsPreview(); closeAdminPwd(); } });
 
 async function checkServices() {
   const checks = [
@@ -1057,31 +1097,50 @@ async function loadAdminProfile() {
   try {
     const d = await apiJSON("/api/admin/profile");
     set("admin-username", d.username);
-    set("admin-login-at", d.login_at ? new Date(d.login_at * 1000).toLocaleString("zh-CN", { hour12: false }) : "-");
   } catch (e) {
     set("admin-username", "读取失败");
-    setAdminHint(e.message, false);
   }
 }
-async function changeAdminPassword() {
+function openAdminPwd() {
+  ["admin-old-pass", "admin-new-pass", "admin-new-pass2"].forEach(id => {
+    document.getElementById(id).value = "";
+  });
+  setAdminHint("");
+  document.getElementById("admin-pwd-scrim").classList.add("show");
+  document.getElementById("admin-pwd-modal").classList.add("show");
+  document.getElementById("admin-old-pass").focus();
+}
+function closeAdminPwd() {
+  document.getElementById("admin-pwd-scrim").classList.remove("show");
+  document.getElementById("admin-pwd-modal").classList.remove("show");
+}
+async function submitAdminPwd() {
   const oldEl = document.getElementById("admin-old-pass");
   const newEl = document.getElementById("admin-new-pass");
   const new2El = document.getElementById("admin-new-pass2");
-  if (!oldEl.value || !newEl.value) { setAdminHint("请填写当前密码和新密码", false); return; }
+  if (!oldEl.value || !newEl.value || !new2El.value) { setAdminHint("请完整填写三个密码字段", false); return; }
   if (newEl.value.length < 6) { setAdminHint("新密码至少 6 位", false); return; }
   if (newEl.value !== new2El.value) { setAdminHint("两次输入的新密码不一致", false); return; }
+  const btn = document.getElementById("admin-pwd-submit");
+  btn.disabled = true; btn.textContent = "提交中…";
   try {
     const d = await apiJSON("/api/admin/password", {
       method: "PUT",
       body: JSON.stringify({ old_password: oldEl.value, new_password: newEl.value }),
     });
-    oldEl.value = newEl.value = new2El.value = "";
-    setAdminHint(d.message || "密码已更新", true);
+    closeAdminPwd();
+    alert(d.message || "管理员密码已更新");
   } catch (e) {
     setAdminHint(e.message, false);
+  } finally {
+    btn.disabled = false; btn.textContent = "确定";
   }
 }
-document.getElementById("admin-pass-submit").addEventListener("click", changeAdminPassword);
+document.getElementById("admin-pwd-open").addEventListener("click", openAdminPwd);
+document.getElementById("admin-pwd-close").addEventListener("click", closeAdminPwd);
+document.getElementById("admin-pwd-cancel").addEventListener("click", closeAdminPwd);
+document.getElementById("admin-pwd-scrim").addEventListener("click", closeAdminPwd);
+document.getElementById("admin-pwd-submit").addEventListener("click", submitAdminPwd);
 
 // --- 一键 HTTPS ---
 function setHttps(msg, ok) {
