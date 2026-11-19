@@ -168,6 +168,13 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
   background:var(--card2);font-size:11.5px;color:var(--text);outline:none}
 .alarmTools input[type=datetime-local]{color-scheme:dark;max-width:190px}
 .alarmTools .sep{font-size:11px;color:var(--dim)}
+/* 时间未选择时显示「—」，表示不加时间过滤 */
+.alarmTools .timeField{position:relative;display:inline-flex;align-items:center}
+.alarmTools .timeField .timeDash{position:absolute;left:10px;top:50%;transform:translateY(-50%);
+  color:var(--dim);font-size:12px;line-height:1;pointer-events:none;display:none}
+.alarmTools .timeField.empty:not(:focus-within) input{color:transparent}
+.alarmTools .timeField.empty:not(:focus-within) .timeDash{display:block}
+.alarmTools .timeField.empty input::-webkit-calendar-picker-indicator{cursor:pointer}
 .alarmTabs{display:flex;gap:6px;margin-bottom:12px;padding:3px;border-radius:11px;
   border:1px solid var(--line);background:rgba(255,255,255,.02);width:fit-content}
 .alarmTab{height:28px;padding:0 20px;border-radius:8px;border:1px solid transparent;
@@ -601,10 +608,18 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
         <select id="alarmDeviceSel" title="按设备过滤">
           <option value="">全部设备</option>
         </select>
-        <input id="alarmFrom" type="datetime-local" title="开始时间">
+        <span class="timeField">
+          <input id="alarmFrom" type="datetime-local" title="开始时间（留空表示不限）">
+          <span class="timeDash" aria-hidden="true">—</span>
+        </span>
         <span class="sep">至</span>
-        <input id="alarmTo" type="datetime-local" title="结束时间">
+        <span class="timeField">
+          <input id="alarmTo" type="datetime-local" title="结束时间（留空表示不限）">
+          <span class="timeDash" aria-hidden="true">—</span>
+        </span>
         <button id="btnAlarmQuery" class="btn" style="height:31px;font-size:11.5px">查询</button>
+        <button id="btnAlarmClear" class="btn" style="height:31px;font-size:11.5px;color:var(--dim)"
+          title="清空开始/结束时间，查询全部">清除</button>
       </div>
       <div id="alarmMeta" class="alarmMeta">实时接收中 · 共 0 条</div>
       <div id="alarmList" class="alarmList"><div class="emptyState">暂无告警</div></div>
@@ -687,7 +702,7 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
    'videoEmpty', 'videoHint', 'btnVideoAction', 'btnVideoStop', 'btnVideoSound',
    'btnMic', 'voiceCard', 'micMeterFill',
    'videoMsg', 'alarmList', 'alarmFilter', 'alarmPager', 'alarmDeviceSel',
-   'alarmFrom', 'alarmTo', 'alarmMeta', 'btnAlarmQuery',
+   'alarmFrom', 'alarmTo', 'alarmMeta', 'btnAlarmQuery', 'btnAlarmClear',
    'carStatus', 'servoStatus', 'servoEnable',
    'userName', 'btnLogout',
    'recordBadge', 'recordActive', 'recFilename', 'recStartedAt', 'recDuration',
@@ -1443,7 +1458,7 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
     h.items.forEach(function (row) { el.alarmList.appendChild(alarmRowEl(row)); });
     setAlarmMeta('共 ' + h.total + ' 条 · 第 ' + (h.pages ? h.page : 0) + '/' + h.pages + ' 页 · ' +
       (filter.device ? '设备 ' + filter.device : '全部设备') + ' · ' +
-      (filter.from || filter.to ? '已按时间过滤' : '最近 30 天'));
+      (filter.from || filter.to ? '已按时间过滤' : '全部时间'));
     renderHistoryPager();
   }
   function loadAlarmDevices() {
@@ -1475,6 +1490,16 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
     if (!value) return '';
     var ts = new Date(value).getTime();
     return isNaN(ts) ? '' : Math.floor(ts / 1000);
+  }
+  function syncAlarmTimeDash(input) {
+    var wrap = input && input.closest ? input.closest('.timeField') : null;
+    if (wrap) wrap.classList.toggle('empty', !input.value);
+  }
+  function clearAlarmTime() {
+    el.alarmFrom.value = '';
+    el.alarmTo.value = '';
+    syncAlarmTimeDash(el.alarmFrom);
+    syncAlarmTimeDash(el.alarmTo);
   }
   function queryAlarms(page) {
     if (ui.alarm.loading) return;
@@ -2674,6 +2699,12 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
   Array.prototype.forEach.call(document.querySelectorAll('.alarmTab'), function (btn) {
     btn.addEventListener('click', function () { setAlarmTab(btn.getAttribute('data-alarm-tab')); });
   });
+  [el.alarmFrom, el.alarmTo].forEach(function (input) {
+    input.addEventListener('input', function () { syncAlarmTimeDash(input); });
+    input.addEventListener('change', function () { syncAlarmTimeDash(input); });
+    syncAlarmTimeDash(input);
+  });
+  el.btnAlarmClear.addEventListener('click', clearAlarmTime);
   el.btnAlarmQuery.addEventListener('click', function () {
     ui.alarm.history.loaded = false;
     queryAlarms(1);
