@@ -144,7 +144,14 @@
       </div>
     </div>
 
-    <div class="menu-item" data-panel="system"><span class="ico">⚙️</span>系统设置</div>
+    <div class="menu-group open">
+      <div class="menu-group-title"><span class="ico">⚙️</span>系统设置<span class="arrow">▶</span></div>
+      <div class="menu-children">
+        <div class="menu-item" data-panel="sys-status">运行状态</div>
+        <div class="menu-item" data-panel="sys-admin">管理员设置</div>
+        <div class="menu-item" data-panel="sys-https">一键HTTPS</div>
+      </div>
+    </div>
     <div class="menu-item" data-panel="logs"><span class="ico">📜</span>日志</div>
   </nav>
 </aside>
@@ -328,16 +335,66 @@
     </div>
   </section>
 
-  <!-- 系统设置 -->
-  <section class="panel" data-panel="system">
-    <h2>系统设置</h2>
+  <!-- 运行状态 -->
+  <section class="panel" data-panel="sys-status">
+    <h2>运行状态</h2>
+    <p class="lead">云服务器实时资源占用与 walle 系统版本，每 5 秒自动刷新。</p>
     <div class="grid">
-      <div class="card"><h3>门户版本</h3><div class="big" style="font-size:18px">walle-ai v0.1</div><div class="sub">2026-11-16 原型</div></div>
+      <div class="card"><h3>CPU 使用率</h3><div class="big" id="sys-cpu">-</div><div class="sub" id="sys-cpu-sub">-</div></div>
+      <div class="card"><h3>内存使用率</h3><div class="big" id="sys-mem">-</div><div class="sub" id="sys-mem-sub">-</div></div>
+      <div class="card"><h3>网络速率</h3><div class="big" style="font-size:20px" id="sys-net">-</div><div class="sub" id="sys-net-sub">↓ 下行 / ↑ 上行</div></div>
+      <div class="card"><h3>硬盘使用率</h3><div class="big" id="sys-disk">-</div><div class="sub" id="sys-disk-sub">-</div></div>
+      <div class="card"><h3>walle 版本</h3><div class="big" style="font-size:20px" id="sys-version">-</div><div class="sub">walle-ai 门户</div></div>
+    </div>
+    <div style="height:14px"></div>
+    <div class="grid">
       <div class="card"><h3>服务器时区</h3><div class="big" style="font-size:18px" id="tz">-</div></div>
-      <div class="card"><h3>Nginx 门户</h3><div class="big" style="font-size:18px:"><span class="tag ok">运行中</span></div><div class="sub">8088 / 手动启停</div></div>
+      <div class="card"><h3>Nginx 门户</h3><div class="big" style="font-size:18px"><span class="tag ok">运行中</span></div><div class="sub">8088 / 手动启停</div></div>
       <div class="card"><h3>EMQX License</h3><div class="big" style="font-size:18px" id="lic-type">-</div><div class="sub" id="lic-expiry">-</div></div>
     </div>
     <div style="height:14px"></div>
+    <div class="card">
+      <h3>维护动作</h3>
+      <div style="display:flex; gap:10px; flex-wrap:wrap">
+        <button onclick="restartSrs()" class="logout" style="color:var(--accent); border-color:#2a3a55">重启 SRS</button>
+        <button onclick="restartEmqx()" class="logout" style="color:var(--accent2); border-color:#1f4a33">重启 EMQX</button>
+        <button onclick="alert('TODO：清理过期录像')" class="logout">清理过期录像</button>
+        <button onclick="alert('TODO：导出诊断包')" class="logout">导出诊断包</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 管理员设置 -->
+  <section class="panel" data-panel="sys-admin">
+    <h2>管理员设置</h2>
+    <p class="lead">当前登录的管理员账号（EMQX Dashboard 账号），修改密码后请使用新密码登录。</p>
+    <div class="grid">
+      <div class="card">
+        <h3>账号信息</h3>
+        <table>
+          <tbody>
+            <tr><th>用户名</th><td id="admin-username">-</td></tr>
+            <tr><th>角色</th><td><span class="tag ok">管理员</span></td></tr>
+            <tr><th>登录时间</th><td id="admin-login-at">-</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h3>修改密码</h3>
+        <div class="user-form" style="flex-direction:column;align-items:stretch">
+          <input id="admin-old-pass" type="password" placeholder="当前密码" autocomplete="current-password" style="width:100%" />
+          <input id="admin-new-pass" type="password" placeholder="新密码（至少 6 位）" autocomplete="new-password" style="width:100%" />
+          <input id="admin-new-pass2" type="password" placeholder="确认新密码" autocomplete="new-password" style="width:100%" />
+          <button class="btn primary" id="admin-pass-submit">保存新密码</button>
+        </div>
+        <p class="sub" id="admin-pass-hint" style="margin-top:10px"></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 一键 HTTPS -->
+  <section class="panel" data-panel="sys-https">
+    <h2>一键HTTPS</h2>
     <div class="card">
       <h3>一键 HTTPS（WebRTC）</h3>
       <p class="sub" style="margin:0 0 12px; line-height:1.6">
@@ -353,16 +410,6 @@
       </div>
       <p class="sub" id="https-status" style="margin-top:10px">加载中…</p>
       <p class="sub" id="https-hint" style="display:none; color:var(--warn); white-space:pre-wrap; margin-top:8px"></p>
-    </div>
-    <div style="height:14px"></div>
-    <div class="card">
-      <h3>维护动作</h3>
-      <div style="display:flex; gap:10px; flex-wrap:wrap">
-        <button onclick="restartSrs()" class="logout" style="color:var(--accent); border-color:#2a3a55">重启 SRS</button>
-        <button onclick="restartEmqx()" class="logout" style="color:var(--accent2); border-color:#1f4a33">重启 EMQX</button>
-        <button onclick="alert('TODO：清理过期录像')" class="logout">清理过期录像</button>
-        <button onclick="alert('TODO：导出诊断包')" class="logout">导出诊断包</button>
-      </div>
     </div>
   </section>
 
@@ -413,7 +460,9 @@ function showPanel(name) {
   if (name === "mqtt-clients") loadMqttClients();
   if (name === "bindings") loadBindings();
   if (name === "srs-auth") loadStreamSecret();
-  if (name === "system") loadHttpsStatus();
+  if (name === "sys-status") loadSystemStatus();
+  if (name === "sys-admin") loadAdminProfile();
+  if (name === "sys-https") loadHttpsStatus();
 }
 nav.querySelectorAll(".menu-item").forEach(i => i.addEventListener("click", () => showPanel(i.dataset.panel)));
 nav.querySelectorAll(".menu-group-title").forEach(t => t.addEventListener("click", () => {
@@ -971,6 +1020,69 @@ document.getElementById("btn-secret-copy").addEventListener("click", copySecret)
 document.getElementById("btn-secret-gen").addEventListener("click", regenerateStreamSecret);
 document.getElementById("btn-secret-save").addEventListener("click", saveStreamSecret);
 
+// --- 运行状态 ---
+function fmtBytes(n) {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return n.toFixed(i ? 1 : 0) + " " + units[i];
+}
+function fmtRate(kbps) {
+  return kbps >= 1000 ? (kbps / 1000).toFixed(2) + " Mbps" : kbps.toFixed(1) + " kbps";
+}
+async function loadSystemStatus() {
+  try {
+    const d = await apiJSON("/api/admin/system-status");
+    set("sys-cpu", d.cpu.percent.toFixed(1) + "%");
+    set("sys-cpu-sub", d.cpu.cores + " 核");
+    set("sys-mem", d.memory.percent.toFixed(1) + "%");
+    set("sys-mem-sub", fmtBytes(d.memory.used) + " / " + fmtBytes(d.memory.total));
+    set("sys-net", "↓ " + fmtRate(d.network.rx_kbps));
+    set("sys-net-sub", "↑ 上行 " + fmtRate(d.network.tx_kbps));
+    set("sys-disk", d.disk.percent.toFixed(1) + "%");
+    set("sys-disk-sub", fmtBytes(d.disk.used) + " / " + fmtBytes(d.disk.total));
+    set("sys-version", "v" + d.version);
+  } catch (e) {
+    set("sys-version", "读取失败");
+  }
+}
+
+// --- 管理员设置 ---
+function setAdminHint(msg, ok) {
+  const el = document.getElementById("admin-pass-hint");
+  el.textContent = msg;
+  el.style.color = ok ? "var(--accent2)" : "var(--bad)";
+}
+async function loadAdminProfile() {
+  try {
+    const d = await apiJSON("/api/admin/profile");
+    set("admin-username", d.username);
+    set("admin-login-at", d.login_at ? new Date(d.login_at * 1000).toLocaleString("zh-CN", { hour12: false }) : "-");
+  } catch (e) {
+    set("admin-username", "读取失败");
+    setAdminHint(e.message, false);
+  }
+}
+async function changeAdminPassword() {
+  const oldEl = document.getElementById("admin-old-pass");
+  const newEl = document.getElementById("admin-new-pass");
+  const new2El = document.getElementById("admin-new-pass2");
+  if (!oldEl.value || !newEl.value) { setAdminHint("请填写当前密码和新密码", false); return; }
+  if (newEl.value.length < 6) { setAdminHint("新密码至少 6 位", false); return; }
+  if (newEl.value !== new2El.value) { setAdminHint("两次输入的新密码不一致", false); return; }
+  try {
+    const d = await apiJSON("/api/admin/password", {
+      method: "PUT",
+      body: JSON.stringify({ old_password: oldEl.value, new_password: newEl.value }),
+    });
+    oldEl.value = newEl.value = new2El.value = "";
+    setAdminHint(d.message || "密码已更新", true);
+  } catch (e) {
+    setAdminHint(e.message, false);
+  }
+}
+document.getElementById("admin-pass-submit").addEventListener("click", changeAdminPassword);
+
 // --- 一键 HTTPS ---
 function setHttps(msg, ok) {
   const el = document.getElementById("https-status");
@@ -1057,8 +1169,8 @@ function restartEmqx() {
 document.getElementById("open-emqx-dash").href =
   location.protocol + "//" + location.hostname + ":18083/";
 
-loadEMQX(); loadSRS(); checkServices(); fillStatic(); loadUsers(); loadHttpsStatus();
-setInterval(() => { loadEMQX(); loadSRS(); }, 5000);
+loadEMQX(); loadSRS(); checkServices(); fillStatic(); loadUsers(); loadSystemStatus();
+setInterval(() => { loadEMQX(); loadSRS(); loadSystemStatus(); }, 5000);
 </script>
 
 </body>

@@ -22,6 +22,7 @@ import sqlite3
 import struct
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -49,6 +50,8 @@ DOMAIN_RE = re.compile(
 )
 EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}$")
 
+APP_VERSION = "0.1.1"  # 与 docs/version_record.md 保持一致
+
 HOST = "127.0.0.1"
 PORT = 9000
 EMQX_BASE = "http://127.0.0.1:18083/api/v5"
@@ -66,19 +69,24 @@ SESSIONS = {}
 
 def new_session(username):
     token = secrets.token_urlsafe(32)
-    SESSIONS[token] = (username, time.time() + SESSION_TTL)
+    now = time.time()
+    SESSIONS[token] = (username, now + SESSION_TTL, now)
     return token
 
 
-def session_user(token):
+def session_record(token):
     record = SESSIONS.get(token)
     if not record:
         return None
-    username, expires_at = record
-    if expires_at < time.time():
+    if record[1] < time.time():
         SESSIONS.pop(token, None)
         return None
-    return username
+    return record
+
+
+def session_user(token):
+    record = session_record(token)
+    return record[0] if record else None
 
 
 def load_credentials():
@@ -222,6 +230,96 @@ def run_https_helper(args, timeout):
     return {"ok": False, "error": detail[-600:] or f"脚本退出码 {proc.returncode}"}
 
 
+# ---------- 运行状态 ----------
+_status_lock = threading.Lock()
+
+
+def _cpu_times():
+    with open("/proc/stat", encoding="ascii") as fh:
+        values = [int(v) for v in fh.readline().split()[1:]]
+    idle = values[3] + (values[4] if len(values) > 4 else 0)
+    return sum(values), idle
+
+
+def _net_bytes():
+    rx = tx = 0
+    with open("/proc/net/dev", encoding="ascii") as fh:
+        for line in fh.readlines()[2:]:
+            name, _, stats = line.partition(":")
+            if not stats or name.strip() == "lo":
+                continue
+            fields = stats.split()
+            rx += int(fields[0])
+            tx += int(fields[8])
+    return rx, tx
+
+
+def _meminfo():
+    values = {}
+    with open("/proc/meminfo", encoding="ascii") as fh:
+        for line in fh:
+            key, _, rest = line.partition(":")
+            values[key] = int(rest.strip().split()[0]) * 1024
+    total = values.get("MemTotal", 0)
+    available = values.get("MemAvailable", values.get("MemFree", 0))
+    return total, max(total - available, 0)
+
+
+try:
+    _status_prev = (time.time(), *_cpu_times(), *_net_bytes())
+except OSError:
+    _status_prev = None
+
+
+def _percent(used, total):
+    return round(used * 100 / total, 1) if total else 0.0
+
+
+def system_status():
+    """按两次采样之间的增量计算 CPU 与网速，前端轮询即可得到实时值。"""
+    global _status_prev
+    now = time.time()
+    cpu_total, cpu_idle = _cpu_times()
+    rx, tx = _net_bytes()
+    mem_total, mem_used = _meminfo()
+    vfs = os.statvfs("/")
+    disk_total = vfs.f_blocks * vfs.f_frsize
+    disk_used = disk_total - vfs.f_bavail * vfs.f_frsize
+
+    with _status_lock:
+        prev, _status_prev = _status_prev, (now, cpu_total, cpu_idle, rx, tx)
+
+    cpu_percent = 0.0
+    rx_kbps = tx_kbps = 0.0
+    if prev:
+        elapsed = now - prev[0]
+        if elapsed > 0:
+            delta_total = cpu_total - prev[1]
+            if delta_total > 0:
+                cpu_percent = 100 * (delta_total - (cpu_idle - prev[2])) / delta_total
+            rx_kbps = max(0, rx - prev[3]) * 8 / 1000 / elapsed
+            tx_kbps = max(0, tx - prev[4]) * 8 / 1000 / elapsed
+
+    return {
+        "version": APP_VERSION,
+        "cpu": {
+            "percent": round(min(max(cpu_percent, 0), 100), 1),
+            "cores": os.cpu_count() or 1,
+        },
+        "memory": {
+            "total": mem_total,
+            "used": mem_used,
+            "percent": _percent(mem_used, mem_total),
+        },
+        "disk": {
+            "total": disk_total,
+            "used": disk_used,
+            "percent": _percent(disk_used, disk_total),
+        },
+        "network": {"rx_kbps": round(rx_kbps, 1), "tx_kbps": round(tx_kbps, 1)},
+    }
+
+
 def init_db():
     os.makedirs(DATA_DIR, exist_ok=True)
     with db() as conn:
@@ -263,12 +361,18 @@ def db():
         conn.close()
 
 
-def emqx(method, path, body=None):
-    """调用 EMQX REST API，返回 (status, data)。"""
+def emqx(method, path, body=None, token=None):
+    """调用 EMQX REST API，返回 (status, data)。
+
+    默认用 API Key；Dashboard 用户相关接口必须传 dashboard 会话 token。
+    """
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(EMQX_BASE + path, data=data, method=method)
-    token = base64.b64encode(f"{EMQX_KEY}:{EMQX_SECRET}".encode()).decode()
-    req.add_header("Authorization", "Basic " + token)
+    if token:
+        req.add_header("Authorization", "Bearer " + token)
+    else:
+        basic = base64.b64encode(f"{EMQX_KEY}:{EMQX_SECRET}".encode()).decode()
+        req.add_header("Authorization", "Basic " + basic)
     req.add_header("Content-Type", "application/json")
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
@@ -461,6 +565,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.get_stream_secret()
         if self.path == "/api/admin/https":
             return self.https_status()
+        if self.path == "/api/admin/system-status":
+            return self.system_status()
+        if self.path == "/api/admin/profile":
+            return self.admin_profile()
         self._json(404, {"message": "not found"})
 
     def do_POST(self):
@@ -485,6 +593,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_PUT(self):
         if self.path == "/api/admin/stream-secret":
             return self.update_stream_secret()
+        if self.path == "/api/admin/password":
+            return self.change_admin_password()
         if self.path.startswith("/api/users/"):
             return self.update_user(self._username())
         self._json(404, {"message": "not found"})
@@ -637,11 +747,73 @@ class Handler(BaseHTTPRequestHandler):
             })
         return self._json(200, {"message": "证书已续期", "state": result})
 
-    def _is_admin(self):
+    # ---------- 运行状态 / 管理员设置 ----------
+    def system_status(self):
+        if not self._is_admin():
+            return self._deny()
+        try:
+            return self._json(200, system_status())
+        except OSError as exc:
+            return self._json(500, {"message": f"读取系统状态失败：{exc}"})
+
+    def admin_profile(self):
+        record = self._session()
+        if not record:
+            return self._deny()
+        return self._json(200, {
+            "username": record[0],
+            "role": "administrator",
+            "login_at": record[2],
+            "expires_at": record[1],
+        })
+
+    def change_admin_password(self):
+        record = self._session()
+        if not record:
+            return self._deny()
+        body = self._body()
+        if not isinstance(body, dict):
+            return self._json(400, {"message": "请求体格式错误"})
+        old = str(body.get("old_password") or "")
+        new = str(body.get("new_password") or "")
+        if not old or not new:
+            return self._json(400, {"message": "当前密码和新密码都不能为空"})
+        if len(new) < 6:
+            return self._json(400, {"message": "新密码至少 6 位"})
+        username = record[0]
+        # change_pwd 不接受 API Key，必须先用当前密码换取 Dashboard 会话 token
+        status, data = emqx_login(username, old)
+        if status == 0:
+            return self._json(502, {"message": data.get("message", "EMQX 不可达")})
+        if status != 200:
+            return self._json(400, {"message": "当前密码不正确"})
+        token = (data or {}).get("token")
+        if not token:
+            return self._json(502, {"message": "EMQX 未返回登录凭据，无法修改密码"})
+        status, data = emqx(
+            "POST",
+            f"/users/{urllib.parse.quote(username, safe='')}/change_pwd",
+            {"old_pwd": old, "new_pwd": new},
+            token=token,
+        )
+        if status in (200, 204):
+            return self._json(200, {"message": "管理员密码已更新"})
+        if status == 0:
+            message = data.get("message") if isinstance(data, dict) else ""
+            return self._json(502, {"message": message or "EMQX 不可达"})
+        if status in (401, 403):
+            return self._json(502, {"message": "EMQX 拒绝修改密码，请重新登录后再试"})
+        message = data.get("message") if isinstance(data, dict) else ""
+        return self._json(400, {"message": message or "密码修改失败，请检查当前密码"})
+
+    def _session(self):
         auth = self.headers.get("Authorization", "")
         if not auth.startswith("Bearer "):
-            return False
-        return session_user(auth[7:].strip()) is not None
+            return None
+        return session_record(auth[7:].strip())
+
+    def _is_admin(self):
+        return self._session() is not None
 
     def _deny(self):
         return self._json(401, {"message": "未登录或会话已失效，请以管理员身份登录"})
