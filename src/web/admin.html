@@ -413,11 +413,12 @@
   <section class="panel" data-panel="sys-https">
     <h2>一键HTTPS</h2>
     <div class="card">
-      <h3>一键 HTTPS（WebRTC）</h3>
+      <h3>一键 HTTPS（门户 + EMQX）</h3>
       <p class="sub" style="margin:0 0 12px; line-height:1.6">
-        填写已解析到本机的域名，自动向 Let's Encrypt 申请证书并配置 nginx 443 反代。<br />
-        前提：域名 A 记录指向本机公网 IP；放行 TCP 80/443 与 UDP 8000（WebRTC 媒体）；
-        服务器已安装 certbot；运行门户的用户已配置免密 sudo。
+        填写已解析到本机的域名，自动向 Let's Encrypt 申请证书，配置 nginx 443 反代，
+        并把同一张证书同步到 EMQX 的 8883（MQTT/TLS）和 8084（MQTT/WSS）。<br />
+        前提：域名 A 记录指向本机公网 IP；放行 TCP 80/443/8883/8084 与 UDP 8000（WebRTC 媒体）；
+        服务器已安装 certbot 与 EMQX；运行门户的用户已配置免密 sudo。
       </p>
       <div class="user-form">
         <input id="https-domain" placeholder="live.example.com" autocomplete="off" style="width:260px" />
@@ -1161,8 +1162,12 @@ async function loadHttpsStatus() {
     const emailEl = document.getElementById("https-email");
     if (d.enabled) {
       const left = d.days_left == null ? "" : `，剩余 ${d.days_left} 天`;
+      const emqx = d.emqx || {};
+      const emqxText = emqx.ok
+        ? "；EMQX 8883/8084 已同步"
+        : (emqx.error ? `；EMQX 未同步：${emqx.error}` : "");
       const el = document.getElementById("https-status");
-      el.innerHTML = `已启用：<a class="svc-link" style="margin-left:0" href="${esc(d.https_url)}" target="_blank" rel="noopener">${esc(d.https_url)}</a>（到期 ${esc(d.not_after || "-")}${esc(left)}）`;
+      el.innerHTML = `已启用：<a class="svc-link" style="margin-left:0" href="${esc(d.https_url)}" target="_blank" rel="noopener">${esc(d.https_url)}</a>（到期 ${esc(d.not_after || "-")}${esc(left)}）${esc(emqxText)}`;
       el.style.color = "var(--accent2)";
       showHttpsHint("");
     } else {
@@ -1178,7 +1183,7 @@ async function applyHttps() {
   const domain = document.getElementById("https-domain").value.trim();
   const email = document.getElementById("https-email").value.trim();
   if (!domain) { alert("请填写域名，例如 live.example.com"); return; }
-  if (!confirm(`确认给 ${domain} 申请 HTTPS 证书？\n将调用 certbot 并修改系统 nginx 配置。`)) return;
+  if (!confirm(`确认给 ${domain} 申请 HTTPS 证书？\n将调用 certbot，并修改系统 nginx 与 EMQX（8883/8084）的证书配置。`)) return;
   const btn = document.getElementById("https-apply");
   btn.disabled = true; btn.textContent = "申请中…";
   setHttps("正在申请证书，通常需要 10-60 秒…", null);

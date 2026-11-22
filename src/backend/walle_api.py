@@ -251,6 +251,17 @@ def https_state():
     return data if isinstance(data, dict) else {}
 
 
+def https_result_message(message, result):
+    """把脚本返回的 EMQX 证书同步结果附加到提示文案。"""
+    emqx = result.get("emqx")
+    if not isinstance(emqx, dict):
+        return message
+    if emqx.get("ok"):
+        return f"{message}，EMQX 8883/8084 证书已同步"
+    detail = str(emqx.get("error") or "").strip()
+    return f"{message}；EMQX 未同步" + (f"：{detail}" if detail else "")
+
+
 def run_https_helper(args, timeout):
     """调用特权脚本（sudo -n），返回脚本最后一行 JSON。"""
     try:
@@ -1039,6 +1050,9 @@ class Handler(BaseHTTPRequestHandler):
         days_left = None
         if isinstance(epoch, (int, float)):
             days_left = max(0, int((epoch - time.time()) // 86400))
+        emqx = state.get("emqx")
+        if not isinstance(emqx, dict):
+            emqx = {}
         return self._json(200, {
             "enabled": bool(domain) and os.path.exists(HTTPS_SITE_ENABLED),
             "domain": domain,
@@ -1047,6 +1061,7 @@ class Handler(BaseHTTPRequestHandler):
             "days_left": days_left,
             "applied_at": state.get("applied_at") or "",
             "https_url": f"https://{domain}/" if domain else "",
+            "emqx": emqx,
             "helper": HTTPS_HELPER,
         })
 
@@ -1069,7 +1084,10 @@ class Handler(BaseHTTPRequestHandler):
                 "message": result.get("error") or "申请证书失败",
                 "hint": HTTPS_SUDO_HINT,
             })
-        return self._json(200, {"message": f"{domain} 已启用 HTTPS", "state": result})
+        return self._json(200, {
+            "message": https_result_message(f"{domain} 已启用 HTTPS", result),
+            "state": result,
+        })
 
     def https_renew(self):
         if not self._is_admin():
@@ -1086,7 +1104,10 @@ class Handler(BaseHTTPRequestHandler):
                 "message": result.get("error") or "续期失败",
                 "hint": HTTPS_SUDO_HINT,
             })
-        return self._json(200, {"message": "证书已续期", "state": result})
+        return self._json(200, {
+            "message": https_result_message("证书已续期", result),
+            "state": result,
+        })
 
     # ---------- 运行状态 / 管理员设置 ----------
     def system_status(self):
