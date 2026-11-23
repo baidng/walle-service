@@ -26,7 +26,7 @@ walle 是一个面向树莓派小车的远程控制平台：通过 **MQTT** 下�
 
 **设备接入**
 
-- MQTT 主题按 `walle/{device_id}/{cmd|state|alarm|heartbeat}` 划分
+- MQTT 主题按 `walle/{tenant}/device/{device}/{cmd|state|alarm|heartbeat}` 划分；agent 对话使用 `walle/{tenant}/agents/{agent}/...`
 - 视频经 RTMP 推流接入，统一以 HTTP-FLV / HLS / WebRTC 分发
 
 ## 快速开始

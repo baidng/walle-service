@@ -57,7 +57,7 @@ HOST = "127.0.0.1"
 PORT = 9000
 EMQX_BASE = "http://127.0.0.1:18083/api/v5"
 AUTH_ID = "password_based:built_in_database"
-ROLES = ("客户", "设备")
+ROLES = ("客户", "设备", "agent")
 
 # 设备绑定生成的 ACL 规则写在 EMQX file 授权源的这一段标记之间，重新生成时整段替换。
 ACL_BEGIN = "%% ===== walle bindings (auto-generated, do not edit) ====="
@@ -378,23 +378,70 @@ def system_status():
     }
 
 
+def _migrate_dev_schema(conn):
+    """开发阶段一次性迁移：users 放开 agent 角色，bindings 增加 agent 列。
+
+    不做旧版本兼容，只保证已有数据不丢：旧绑定行的 agent 为空，
+    页面显示为「待补 agent」。SQLite 不支持改 CHECK / 加 UNIQUE 列，只能重建表。
+    """
+    users_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'"
+    ).fetchone()
+    if users_sql and "'agent'" not in (users_sql["sql"] or ""):
+        conn.execute("ALTER TABLE users RENAME TO users_old")
+        conn.execute(
+            """CREATE TABLE users (
+                   username   TEXT PRIMARY KEY,
+                   role       TEXT NOT NULL CHECK (role IN ('客户', '设备', 'agent')),
+                   created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+               )"""
+        )
+        conn.execute(
+            "INSERT INTO users (username, role, created_at) "
+            "SELECT username, role, created_at FROM users_old"
+        )
+        conn.execute("DROP TABLE users_old")
+
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(bindings)")}
+    bsql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'bindings'"
+    ).fetchone()
+    if "agent" not in cols or "customer   TEXT NOT NULL UNIQUE" not in (bsql["sql"] or ""):
+        conn.execute("ALTER TABLE bindings RENAME TO bindings_old")
+        conn.execute(
+            """CREATE TABLE bindings (
+                   device     TEXT PRIMARY KEY,
+                   customer   TEXT NOT NULL UNIQUE,
+                   agent      TEXT UNIQUE,
+                   created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+               )"""
+        )
+        conn.execute(
+            "INSERT INTO bindings (device, customer, created_at) "
+            "SELECT device, customer, created_at FROM bindings_old"
+        )
+        conn.execute("DROP TABLE bindings_old")
+
+
 def init_db():
     os.makedirs(DATA_DIR, exist_ok=True)
     with db() as conn:
         conn.execute(
             """CREATE TABLE IF NOT EXISTS users (
                    username   TEXT PRIMARY KEY,
-                   role       TEXT NOT NULL CHECK (role IN ('客户', '设备')),
+                   role       TEXT NOT NULL CHECK (role IN ('客户', '设备', 'agent')),
                    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
                )"""
         )
         conn.execute(
             """CREATE TABLE IF NOT EXISTS bindings (
                    device     TEXT PRIMARY KEY,
-                   customer   TEXT NOT NULL,
+                   customer   TEXT NOT NULL UNIQUE,
+                   agent      TEXT UNIQUE,
                    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
                )"""
         )
+        _migrate_dev_schema(conn)
         conn.execute(
             """CREATE TABLE IF NOT EXISTS settings (
                    key   TEXT PRIMARY KEY,
@@ -602,38 +649,86 @@ def valid_tenant(value):
 def binding_rows():
     with db() as conn:
         return conn.execute(
-            "SELECT device, customer, created_at FROM bindings ORDER BY customer, device"
+            "SELECT device, customer, agent, created_at FROM bindings "
+            "ORDER BY customer, device"
         ).fetchall()
 
 
 def managed_acl(bindings):
-    """生成 walle 管理的 ACL 段。
+    """生成 walle 管理的 ACL 段（客户 / 设备 / agent 三元绑定）。
 
     规则顺序即 EMQX file 授权源的匹配顺序（首次命中生效）：
-      1. 客户可读写自己租户的整棵子树；
-      2. 设备只读写「绑定客户 + 自己 clientid」的子树，并可订阅发现查询；
-      3. 其余账号（含未绑定设备）禁止访问 walle 命名空间。
+      1. 客户：本租户全量；
+      2. 设备：只读写 walle/{tenant}/device/${clientid}/#，并可订阅租户级发现广播；
+      3. agent：自己的对话通道 walle/{tenant}/agents/${clientid}/# + 本租户所有设备；
+      4. 其余账号禁止访问 walle 命名空间。
     """
     lines = [ACL_BEGIN]
+
+    # 1) 客户：按客户去重，一个客户只生成一条规则
+    seen_customers = set()
     for row in bindings:
-        tenant = acl_quote(row["customer"])
-        lines.append(f'%% 客户 {row["customer"]}：读写本租户整棵子树')
-        lines.append(f'{{allow, {{username, "{tenant}"}}, all, ["walle/{row["customer"]}/#"]}}.')
+        customer = row["customer"]
+        if customer in seen_customers:
+            continue
+        seen_customers.add(customer)
+        lines.append(f'%% 客户 {customer}：本租户全量')
+        lines.append(
+            f'{{allow, {{username, "{acl_quote(customer)}"}}, all, ["walle/{customer}/#"]}}.'
+        )
+
+    # 2) 设备：${clientid} 在“一台设备一个连接”时成立
     for row in bindings:
         device = acl_quote(row["device"])
         tenant = row["customer"]
-        lines.append(f'%% 设备 {row["device"]}：只读写绑定客户 {tenant} 下自己的子树')
+        lines.append(f'%% 设备 {row["device"]}：只读写自己那棵子树 + 租户级发现广播')
         lines.append(
-            f'{{allow, {{username, "{device}"}}, publish, ["walle/{tenant}/${{clientid}}/#"]}}.'
+            f'{{allow, {{username, "{device}"}}, publish, '
+            f'["walle/{tenant}/device/${{clientid}}/#"]}}.'
         )
         lines.append(
             f'{{allow, {{username, "{device}"}}, subscribe, '
-            f'["walle/{tenant}/${{clientid}}/#", "walle/{tenant}/v1/discovery/query"]}}.'
+            f'["walle/{tenant}/device/${{clientid}}/#", "walle/{tenant}/discovery/query"]}}.'
         )
+
+    # 3) agent：一个 agent 只绑一台设备（UNIQUE），这里按 agent 再兜底去重
+    seen_agents = set()
+    for row in bindings:
+        agent = row["agent"]
+        if not agent or agent in seen_agents:
+            continue
+        seen_agents.add(agent)
+        tenant = row["customer"]
+        lines.append(f'%% agent {agent}：自己的对话通道 + 本租户所有设备')
+        lines.append(
+            f'{{allow, {{username, "{acl_quote(agent)}"}}, all, '
+            f'["walle/{tenant}/agents/${{clientid}}/#"]}}.'
+        )
+        lines.append(
+            f'{{allow, {{username, "{acl_quote(agent)}"}}, all, '
+            f'["walle/{tenant}/device/#"]}}.'
+        )
+
     lines.append("%% 未绑定设备及其他账号禁止访问 walle 命名空间")
     lines.append('{deny, all, all, ["walle/#"]}.')
     lines.append(ACL_END)
     return "\n".join(lines)
+
+
+def acl_preview_payload():
+    """只读预览：不调用 EMQX，返回将要生成的 ACL 文本与统计。"""
+    bindings = binding_rows()
+    text = managed_acl(bindings)
+    return {
+        "text": text,
+        "stats": {
+            "bindings": len(bindings),
+            "customers": len({row["customer"] for row in bindings}),
+            "devices": len({row["device"] for row in bindings}),
+            "agents": len({row["agent"] for row in bindings if row["agent"]}),
+            "lines": len(text.splitlines()),
+        },
+    }
 
 
 def strip_managed_acl(rules):
@@ -709,6 +804,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.list_users()
         if self.path == "/api/bindings":
             return self.list_bindings()
+        if self.path == "/api/acl/preview":
+            return self.acl_preview()
         if self.path == "/api/admin/stream-secret":
             return self.get_stream_secret()
         if self.path == "/api/admin/https":
@@ -791,7 +888,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------- 告警接入与查询 ----------
     def ingest_alarm(self):
-        """EMQX 规则引擎回调：把 walle/{tenant}/{device}/v1/alarm 落库。
+        """EMQX 规则引擎回调：把 walle/{tenant}/device/{device}/alarm 落库。
 
         只接受回环地址并校验共享 token；nginx 另有 /api/internal/ deny 规则。
         """
@@ -815,9 +912,11 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(payload, dict):
             return self._json(400, {"message": "payload 必须是 JSON 对象"})
         parts = topic.split("/")
-        if len(parts) != 5 or parts[0] != "walle" or parts[3] != "v1" or parts[4] != "alarm":
-            return self._json(400, {"message": "topic 不符合 walle/{tenant}/{device}/v1/alarm"})
-        tenant, device = parts[1], parts[2]
+        if (len(parts) != 5 or parts[0] != "walle" or parts[2] != "device"
+                or parts[4] != "alarm"):
+            return self._json(
+                400, {"message": "topic 不符合 walle/{tenant}/device/{device}/alarm"})
+        tenant, device = parts[1], parts[3]
         if not valid_tenant(tenant) or not device or any(ord(ch) < 0x20 for ch in device):
             return self._json(400, {"message": "topic 中的租户或设备名不合法"})
 
@@ -1247,7 +1346,8 @@ class Handler(BaseHTTPRequestHandler):
             }
             for name, info in remote.items()
         ]
-        users.sort(key=lambda u: (u["role"] != "客户", u["username"]))
+        order = {"客户": 0, "agent": 1, "设备": 2}
+        users.sort(key=lambda u: (order.get(u["role"], 3), u["username"]))
         return self._json(200, {"data": users})
 
     def create_user(self):
@@ -1262,7 +1362,7 @@ class Handler(BaseHTTPRequestHandler):
         if not username or not password:
             return self._json(400, {"message": "用户名和密码不能为空"})
         if role not in ROLES:
-            return self._json(400, {"message": "角色只能是 客户 或 设备"})
+            return self._json(400, {"message": "角色只能是 客户、设备 或 agent"})
         status, data = emqx(
             "POST",
             f"/authentication/{AUTH_ID}/users",
@@ -1313,8 +1413,18 @@ class Handler(BaseHTTPRequestHandler):
                         409,
                         {"message": f"客户 {username} 仍绑定 {count} 台设备，请先解除绑定"},
                     )
+            if row is not None and row["role"] == "agent":
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM bindings WHERE agent = ?", (username,)
+                ).fetchone()[0]
+                if count:
+                    return self._json(
+                        409,
+                        {"message": f"agent {username} 仍绑定 {count} 台设备，请先解除绑定"},
+                    )
             binding = conn.execute(
-                "SELECT device, customer, created_at FROM bindings WHERE device = ?", (username,)
+                "SELECT device, customer, agent, created_at FROM bindings WHERE device = ?",
+                (username,),
             ).fetchone()
         status, data = emqx("DELETE", emqx_user_path(username))
         if status not in (200, 204):
@@ -1332,7 +1442,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
         return self._json(200, {"username": username, "message": "已删除"})
 
-    # ---------- 设备绑定 ----------
+    # ---------- 设备绑定（客户 + 设备 + agent，三者 1:1） ----------
     def list_bindings(self):
         if not self._is_admin():
             return self._deny()
@@ -1346,28 +1456,49 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"message": "请求体不是合法 JSON"})
         device = (body.get("device") or "").strip()
         customer = (body.get("customer") or "").strip()
-        if not device or not customer:
-            return self._json(400, {"message": "设备和客户都不能为空"})
+        agent = (body.get("agent") or "").strip()
+        if not device or not customer or not agent:
+            return self._json(400, {"message": "设备、客户、agent 三者都必须选择"})
         if any(ord(ch) < 0x20 for ch in device):
             return self._json(400, {"message": "设备名不能包含控制字符"})
         if not valid_tenant(customer):
             return self._json(400, {"message": "客户名不能包含 / + # 等 MQTT 特殊字符"})
+        if not valid_tenant(agent):
+            return self._json(400, {"message": "agent 名不能包含 / + # 等 MQTT 特殊字符"})
         with db() as conn:
             dev = conn.execute("SELECT role FROM users WHERE username = ?", (device,)).fetchone()
             cus = conn.execute("SELECT role FROM users WHERE username = ?", (customer,)).fetchone()
+            agt = conn.execute("SELECT role FROM users WHERE username = ?", (agent,)).fetchone()
             if dev is None or dev["role"] != "设备":
                 return self._json(400, {"message": f"{device} 不是角色为「设备」的用户"})
             if cus is None or cus["role"] != "客户":
                 return self._json(400, {"message": f"{customer} 不是角色为「客户」的用户"})
+            if agt is None or agt["role"] != "agent":
+                return self._json(400, {"message": f"{agent} 不是角色为「agent」的用户"})
             exists = conn.execute(
-                "SELECT customer FROM bindings WHERE device = ?", (device,)
+                "SELECT customer, agent FROM bindings WHERE device = ?", (device,)
             ).fetchone()
             if exists is not None:
                 return self._json(
-                    409, {"message": f"设备 {device} 已绑定到 {exists['customer']}，请先解除绑定"}
+                    409, {"message": f"设备 {device} 已绑定（客户 {exists['customer']}），请先解除绑定"}
+                )
+            agent_used = conn.execute(
+                "SELECT device FROM bindings WHERE agent = ?", (agent,)
+            ).fetchone()
+            if agent_used is not None:
+                return self._json(
+                    409, {"message": f"agent {agent} 已绑定设备 {agent_used['device']}，agent 与设备只能 1:1"}
+                )
+            customer_used = conn.execute(
+                "SELECT device FROM bindings WHERE customer = ?", (customer,)
+            ).fetchone()
+            if customer_used is not None:
+                return self._json(
+                    409, {"message": f"客户 {customer} 已绑定设备 {customer_used['device']}，客户与设备只能 1:1"}
                 )
             conn.execute(
-                "INSERT INTO bindings (device, customer) VALUES (?, ?)", (device, customer)
+                "INSERT INTO bindings (device, customer, agent) VALUES (?, ?, ?)",
+                (device, customer, agent),
             )
         try:
             sync_bindings_acl()
@@ -1375,14 +1506,15 @@ class Handler(BaseHTTPRequestHandler):
             with db() as conn:
                 conn.execute("DELETE FROM bindings WHERE device = ?", (device,))
             return self._json(502, {"message": f"绑定失败，ACL 未写入: {exc}"})
-        return self._json(201, {"device": device, "customer": customer})
+        return self._json(201, {"device": device, "customer": customer, "agent": agent})
 
     def delete_binding(self, device):
         if not self._is_admin():
             return self._deny()
         with db() as conn:
             row = conn.execute(
-                "SELECT device, customer, created_at FROM bindings WHERE device = ?", (device,)
+                "SELECT device, customer, agent, created_at FROM bindings WHERE device = ?",
+                (device,),
             ).fetchone()
             if row is None:
                 return self._json(404, {"message": f"设备 {device} 没有绑定记录"})
@@ -1392,11 +1524,16 @@ class Handler(BaseHTTPRequestHandler):
         except RuntimeError as exc:
             with db() as conn:
                 conn.execute(
-                    "INSERT INTO bindings (device, customer, created_at) VALUES (?, ?, ?)",
-                    (row["device"], row["customer"], row["created_at"]),
+                    "INSERT INTO bindings (device, customer, agent, created_at) VALUES (?, ?, ?, ?)",
+                    (row["device"], row["customer"], row["agent"], row["created_at"]),
                 )
             return self._json(502, {"message": f"解除绑定失败，ACL 未更新: {exc}"})
         return self._json(200, {"device": device, "message": "已解除绑定并删除 ACL"})
+
+    def acl_preview(self):
+        if not self._is_admin():
+            return self._deny()
+        return self._json(200, acl_preview_payload())
 
 
 def main():

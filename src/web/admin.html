@@ -252,7 +252,7 @@
 
   <section class="panel" data-panel="mqtt-users">
     <h2>MQTT · 用户管理</h2>
-    <p class="lead">用户名创建后不可修改。用户名与密码由 EMQX 内置数据库保存（密码只存在 EMQX），角色（客户 / 设备）保存在 walle 本地。</p>
+    <p class="lead">用户名创建后不可修改。用户名与密码由 EMQX 内置数据库保存（密码只存在 EMQX），角色（客户 / 设备 / agent）保存在 walle 本地。</p>
     <div class="card">
       <div class="user-form">
         <input id="nu-name" placeholder="用户名" autocomplete="off" />
@@ -260,6 +260,7 @@
         <select id="nu-role">
           <option value="设备">设备</option>
           <option value="客户">客户</option>
+          <option value="agent">agent</option>
         </select>
         <button class="btn primary" id="nu-submit">添加用户</button>
       </div>
@@ -272,16 +273,19 @@
 
   <section class="panel" data-panel="bindings">
     <h2>MQTT · 设备绑定</h2>
-    <p class="lead">每台设备（角色「设备」）只能绑定一个客户（角色「客户」）。绑定后自动生成 EMQX ACL：设备只能读写绑定客户 <code>walle/{tenant}/{device}/#</code> 的主题，解除绑定时同步删除该 ACL。</p>
+    <p class="lead">客户、设备、agent 三者 1:1 绑定：一台设备只绑一个客户和一个 agent；一个客户、一个 agent 也都只对应一台设备。绑定成功即生成并写入 EMQX ACL，解除绑定时同步删除。</p>
     <div class="card">
       <div class="user-form">
         <select id="bind-device"><option value="">选择设备</option></select>
         <select id="bind-customer"><option value="">选择客户</option></select>
+        <select id="bind-agent"><option value="">选择 agent</option></select>
         <button class="btn primary" id="bind-submit">绑定</button>
+        <button class="btn" id="acl-preview-btn" type="button">预览 ACL</button>
       </div>
+      <pre id="acl-preview" style="display:none;max-height:320px;overflow:auto;font-size:12px;font-family:ui-monospace,Menlo,Consolas,monospace;background:rgba(0,0,0,.25);padding:12px;border-radius:8px;white-space:pre-wrap"></pre>
       <table>
-        <thead><tr><th>设备</th><th>绑定客户</th><th>可用主题</th><th>绑定时间</th><th>操作</th></tr></thead>
-        <tbody id="bindings-tbody"><tr><td colspan="5" style="color:var(--muted)">加载中…</td></tr></tbody>
+        <thead><tr><th>设备</th><th>客户</th><th>agent</th><th>可用主题</th><th>绑定时间</th><th>操作</th></tr></thead>
+        <tbody id="bindings-tbody"><tr><td colspan="6" style="color:var(--muted)">加载中…</td></tr></tbody>
       </table>
     </div>
   </section>
@@ -634,54 +638,74 @@ document.getElementById("users-tbody").addEventListener("click", e => {
   if (btn.dataset.act === "del") deleteUser(btn.dataset.user);
 });
 
-// --- 设备绑定（一台设备只能绑一个客户；绑定即生成 EMQX ACL） ---
+// --- 设备绑定（客户 + 设备 + agent 1:1；绑定即生成 EMQX ACL） ---
 async function loadBindings() {
   const tb = document.getElementById("bindings-tbody");
-  tb.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">加载中…</td></tr>';
+  tb.innerHTML = '<tr><td colspan="6" style="color:var(--muted)">加载中…</td></tr>';
   try {
     const [users, data] = await Promise.all([apiJSON("/api/users"), apiJSON("/api/bindings")]);
     const bindings = data.data || [];
     const bound = new Set(bindings.map(b => b.device));
+    const boundCustomers = new Set(bindings.map(b => b.customer));
+    const boundAgents = new Set(bindings.map(b => b.agent).filter(Boolean));
     const devices = users.data.filter(u => u.role === "设备" && !bound.has(u.username));
-    const customers = users.data.filter(u => u.role === "客户");
+    const customers = users.data.filter(u => u.role === "客户" && !boundCustomers.has(u.username));
+    const agents = users.data.filter(u => u.role === "agent" && !boundAgents.has(u.username));
 
     const devSel = document.getElementById("bind-device");
     const cusSel = document.getElementById("bind-customer");
+    const agtSel = document.getElementById("bind-agent");
     devSel.innerHTML = '<option value="">选择设备</option>' +
       devices.map(u => `<option value="${esc(u.username)}">${esc(u.username)}</option>`).join("");
     cusSel.innerHTML = '<option value="">选择客户</option>' +
       customers.map(u => `<option value="${esc(u.username)}">${esc(u.username)}</option>`).join("");
+    agtSel.innerHTML = '<option value="">选择 agent</option>' +
+      agents.map(u => `<option value="${esc(u.username)}">${esc(u.username)}</option>`).join("");
 
     if (!bindings.length) {
-      tb.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">暂无绑定关系</td></tr>';
+      tb.innerHTML = '<tr><td colspan="6" style="color:var(--muted)">暂无绑定关系</td></tr>';
       return;
     }
     tb.innerHTML = bindings.map(b => `<tr>
       <td>${esc(b.device)}</td>
       <td>${esc(b.customer)}</td>
-      <td><code>walle/${esc(b.customer)}/${esc(b.device)}/#</code></td>
+      <td>${b.agent ? esc(b.agent) : '<span class="tag warn">待补 agent</span>'}</td>
+      <td><code>walle/${esc(b.customer)}/device/${esc(b.device)}/#</code></td>
       <td>${esc(b.created_at || "-")}</td>
       <td><div class="row-actions">
         <button class="btn danger" data-act="unbind" data-device="${esc(b.device)}">解除绑定</button>
       </div></td>
     </tr>`).join("");
   } catch (e) {
-    tb.innerHTML = `<tr><td colspan="5" style="color:var(--bad)">加载失败：${esc(e.message)}</td></tr>`;
+    tb.innerHTML = `<tr><td colspan="6" style="color:var(--bad)">加载失败：${esc(e.message)}</td></tr>`;
   }
 }
 
 async function createBinding() {
   const device = document.getElementById("bind-device").value;
   const customer = document.getElementById("bind-customer").value;
-  if (!device || !customer) { alert("请选择设备和客户"); return; }
+  const agent = document.getElementById("bind-agent").value;
+  if (!device || !customer || !agent) { alert("请选择设备、客户和 agent"); return; }
   try {
     await apiJSON("/api/bindings", {
       method: "POST",
-      body: JSON.stringify({ device, customer }),
+      body: JSON.stringify({ device, customer, agent }),
     });
     await loadBindings();
   } catch (e) {
     alert("绑定失败：" + e.message);
+  }
+}
+
+async function previewAcl() {
+  const pre = document.getElementById("acl-preview");
+  try {
+    const r = await apiJSON("/api/acl/preview");
+    pre.textContent = `统计：${JSON.stringify(r.stats)}\n\n${r.text}`;
+    pre.style.display = "block";
+  } catch (e) {
+    pre.textContent = "预览失败：" + e.message;
+    pre.style.display = "block";
   }
 }
 
@@ -696,6 +720,7 @@ async function deleteBinding(device) {
 }
 
 document.getElementById("bind-submit").addEventListener("click", createBinding);
+document.getElementById("acl-preview-btn").addEventListener("click", previewAcl);
 document.getElementById("bindings-tbody").addEventListener("click", e => {
   const btn = e.target.closest("button[data-act='unbind']");
   if (btn) deleteBinding(btn.dataset.device);
