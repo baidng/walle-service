@@ -1,6 +1,6 @@
 # walle 服务端部署文档（裸机）
 
-> 适用环境：Ubuntu 24.04（aarch64/arm64），单机裸机部署。
+> 适用环境：Ubuntu 24.04（amd64/x86_64），单机裸机部署；arm64 主机把 deb 包后缀换成 arm64 即可。
 > 组件：EMQX Enterprise 6.3.2 + SRS 7.0.215 + Nginx 门户（walle-ai）。
 > 最后验证：2026-11-15 / 门户登录改造 2026-11-16。
 > 架构与业务实现细节见 [walle_detiled_design.md](./walle_detiled_design.md)。
@@ -44,7 +44,7 @@ Nginx（独立实例，由 walle.service 托管或手动启动）
 
 ## 2. 前置条件
 
-- Ubuntu 24.04 LTS，arm64（本手册在 24.04.5 aarch64 验证）。
+- Ubuntu 24.04 LTS，amd64（x86_64）。
 - 建议 4C/8G 以上；磁盘至少 3GB（EMQX 安装约 130MB，SRS 源码+objs 约 460MB，临时 deb 84MB 安装后可删）。
 - 具有 sudo 权限的普通用户（本文以 `gs` 为例）。
 - 可访问 `www.emqx.com`、`packages.emqx.io`、`github.com`。
@@ -89,7 +89,7 @@ SRS 没有官方 apt 源/`.deb` 包，因此要自己下载源码，并编译。
 ```bash
 cd <仓库根目录>/thirdparty
 
-git clone --depth 1 --branch v7.0-a4 https://github.com/ossrs/srs.git 
+git clone --branch v7.0-a4 https://github.com/ossrs/srs.git 
 
 cd srs/trunk
 # 配置：
@@ -111,26 +111,25 @@ SRS 编译产物是“可执行文件 + 静态资源”的自包含应用，不�
 
 ## 6. EMQX Enterprise 6.3.2
 
-官方只提供了 EMQX 的 `.deb` 包，示例以 arm64 为例，实际使用要选择对应的架构包。
+官方只提供了 EMQX 的 `.deb` 包，示例以 amd64 为例，实际使用要选择对应的架构包。
 
 ### 6.1 下载与校验
 
 ```bash
+cd ~/Downloads
+
 #  下载地址： https://www.emqx.com/zh/downloads/enterprise
+# 以下载 6.3.2 版本为例（amd64 包；arm64 主机替换为 -arm64 后缀）
+curl -L -o emqx-enterprise-6.3.2-ubuntu24.04-amd64.deb \
+  https://www.emqx.com/downloads/enterprise/6.3.2/emqx-enterprise-6.3.2-ubuntu24.04-amd64.deb
 
-# 以下载 6.3.2 版本为例
-curl -L -o emqx-enterprise-6.3.2-ubuntu24.04-arm64.deb \
-  https://www.emqx.com/downloads/enterprise/6.3.2/emqx-enterprise-6.3.2-ubuntu24.04-arm64.deb
-
-echo "ea5252d8f3979ecef714ee1d570558c6f07bad61d18d55d8ebd989243790d717  emqx-enterprise-6.3.2-ubuntu24.04-arm64.deb" | sha256sum -c -
 ```
 
 
 ### 6.2 安装与启动
 
 ```bash
-cd /tmp/emqx-deb
-sudo apt install -y ./emqx-enterprise-6.3.2-ubuntu24.04-arm64.deb
+sudo apt install -y ./emqx-enterprise-6.3.2-ubuntu24.04-amd64.deb
 
 # 设置 emqx 服务开机自启
 sudo systemctl enable emqx
@@ -353,6 +352,9 @@ sudo systemctl start srs
 sudo systemctl start walle
 ```
 
+测试：
+浏览器输入：http://<公网ip>:8088/，看是否能正常访问。
+首次登录时，还没有创建客户，因此，只能用管理员的账号登录，默认账号 `admin` / `public`（首次部署后请立即修改）。
 
 ---
 
@@ -410,6 +412,14 @@ curl -s -u "$KEY:$SECRET" http://127.0.0.1:18083/api/v5/rules/walle_alarm_persis
 ```
 
 结果：返回规则且 `enable=true`。
+
+
+### 9.3 开启一键https
+
+刚配置好的服务器，此时还不能使用https登录，需要开启一键https，开启https之后，srs和mqtt协议走的就是加密协议了。
+开启方法：登录管理员账号，点击左边菜单的“系统设置” -- “一键HTTPS”，输入购买的域名，点击“申请证书”。
+
+
 
 
 
