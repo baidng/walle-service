@@ -465,11 +465,12 @@ Action body 模板：
 ### 10.1 主题规范
 
 主题结构：`walle/{tenant}/device/{device}/{resource}`。完整契约以
-`walle-ai/doc/MQTT_protocol_convention.md`（v1.12）为准，服务端只依赖以下主题：
+`walle-ai/doc/MQTT_protocol_convention.md`（v1.13）为准，服务端只依赖以下主题：
 
 | 能力 | 平台 → 设备（请求/命令） | 设备 → 平台（应答/上报） |
 |---|---|---|
 | 上线/下线 | — | `online`（retained + LWT） |
+| 客户端在线 | — | `walle/{tenant}/client/{client_id}/online`（租户级，retained + LWT） |
 | 设备发现 | `walle/{tenant}/discovery/query/request` | `discovery/query/response` |
 | 基础状态 | `baseState/query/request` | `baseState/query/response` |
 | 运行状态 | `runState/query/request` | `runState/query/response` |
@@ -482,9 +483,9 @@ Action body 模板：
 约定：
 
 - `tenant` 为客户用户名；主题第 4 段 `device` 为稳定的 `device_id`，不是 MQTT 用户名。
-- ACL 按客户（`walle/{tenant}/#`）、设备（`walle/{tenant}/device/${clientid}/#`
-  与 `walle/{tenant}/discovery/query/request`）、agent（`walle/{tenant}/agents/${clientid}/#`
-  与本租户 `walle/{tenant}/device/#`）三类授予。
+- ACL 按客户（`walle/{tenant}/#`）、设备（`walle/{tenant}/device/${clientid}/#`、
+  `walle/{tenant}/discovery/query/request` 与 `walle/{tenant}/client/+/online`）、
+  agent（`walle/{tenant}/agents/${clientid}/#` 与本租户 `walle/{tenant}/device/#`）三类授予。
 - v1.12 起请求与应答均不再携带 `uuid`，设备身份只使用主题中的 `device_id`。
 - `car/motor/set/cmd`、`car/servo/set/cmd` 为无应答的持续控制主题，执行结果只写设备端日志。
 
@@ -493,6 +494,7 @@ Action body 模板：
 | 数据 | 来源 | 说明 |
 |---|---|---|
 | 在线状态 | `online` | retained 上线报文 + LWT 遗嘱 |
+| 客户端在线 | `client/{client_id}/online` | App/Web retained 上线；设备端订阅 `client/+/online` |
 | 基础状态 | `baseState/query/response` | 按需查询，不落盘 |
 | 运行状态 | `runState/query/response` | 按需查询推流/音频/录像/电机/舵机/电池/声呐 |
 | 告警 | `alarm/report` | 主动上报，由 EMQX 规则落库 |
@@ -611,7 +613,7 @@ recording (id, device_id, path, start_at, end_at, size, trigger)
 
 - `device` 为稳定的 `device_id`，位于主题固定段 `device/` 之后；`tenant` 为客户用户名。
 - 客户、设备、agent 三者 1:1（`bindings(device 主键, customer UNIQUE, agent UNIQUE)`），管理员可见全部。
-- 用户与 MQTT 凭据一一映射，ACL 按客户 / 设备 / agent 三类生成：客户 `walle/{tenant}/#`；设备 `walle/{tenant}/device/${clientid}/#` 与 `walle/{tenant}/discovery/query/request`；agent `walle/{tenant}/agents/${clientid}/#` 与本租户 `walle/{tenant}/device/#`。
+- 用户与 MQTT 凭据一一映射，ACL 按客户 / 设备 / agent 三类生成：客户 `walle/{tenant}/#`；设备 `walle/{tenant}/device/${clientid}/#`、`walle/{tenant}/discovery/query/request` 与 `walle/{tenant}/client/+/online`；agent `walle/{tenant}/agents/${clientid}/#` 与本租户 `walle/{tenant}/device/#`。
 - 告警按 `tenant` 隔离，客户查询时由服务端强制追加租户条件。
 
 ---

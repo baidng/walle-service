@@ -659,7 +659,7 @@ def managed_acl(bindings):
 
     规则顺序即 EMQX file 授权源的匹配顺序（首次命中生效）：
       1. 客户：本租户全量；
-      2. 设备：只读写 walle/{tenant}/device/${clientid}/#，并可订阅租户级发现广播；
+      2. 设备：只读写 walle/{tenant}/device/${clientid}/#，并可订阅租户级发现广播与客户端在线状态；
       3. agent：自己的对话通道 walle/{tenant}/agents/${clientid}/# + 本租户所有设备；
       4. 其余账号禁止访问 walle 命名空间。
     """
@@ -681,14 +681,15 @@ def managed_acl(bindings):
     for row in bindings:
         device = acl_quote(row["device"])
         tenant = row["customer"]
-        lines.append(f'%% 设备 {row["device"]}：只读写自己那棵子树 + 租户级发现广播')
+        lines.append(f'%% 设备 {row["device"]}：只读写自己那棵子树 + 租户级发现广播/客户端在线状态')
         lines.append(
             f'{{allow, {{username, "{device}"}}, publish, '
             f'["walle/{tenant}/device/${{clientid}}/#"]}}.'
         )
         lines.append(
             f'{{allow, {{username, "{device}"}}, subscribe, '
-            f'["walle/{tenant}/device/${{clientid}}/#", "walle/{tenant}/discovery/query/request"]}}.'
+            f'["walle/{tenant}/device/${{clientid}}/#", "walle/{tenant}/discovery/query/request", '
+            f'"walle/{tenant}/client/+/online"]}}.'
         )
 
     # 3) agent：一个 agent 只绑一台设备（UNIQUE），这里按 agent 再兜底去重
