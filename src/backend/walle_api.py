@@ -688,7 +688,7 @@ def managed_acl(bindings):
         )
         lines.append(
             f'{{allow, {{username, "{device}"}}, subscribe, '
-            f'["walle/{tenant}/device/${{clientid}}/#", "walle/{tenant}/discovery/query"]}}.'
+            f'["walle/{tenant}/device/${{clientid}}/#", "walle/{tenant}/discovery/query/request"]}}.'
         )
 
     # 3) agent：一个 agent 只绑一台设备（UNIQUE），这里按 agent 再兜底去重
@@ -888,7 +888,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------- 告警接入与查询 ----------
     def ingest_alarm(self):
-        """EMQX 规则引擎回调：把 walle/{tenant}/device/{device}/alarm 落库。
+        """EMQX 规则引擎回调：把 walle/{tenant}/device/{device}/alarm/report 落库。
 
         只接受回环地址并校验共享 token；nginx 另有 /api/internal/ deny 规则。
         """
@@ -912,10 +912,10 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(payload, dict):
             return self._json(400, {"message": "payload 必须是 JSON 对象"})
         parts = topic.split("/")
-        if (len(parts) != 5 or parts[0] != "walle" or parts[2] != "device"
-                or parts[4] != "alarm"):
+        if (len(parts) != 6 or parts[0] != "walle" or parts[2] != "device"
+                or parts[4] != "alarm" or parts[5] != "report"):
             return self._json(
-                400, {"message": "topic 不符合 walle/{tenant}/device/{device}/alarm"})
+                400, {"message": "topic 不符合 walle/{tenant}/device/{device}/alarm/report"})
         tenant, device = parts[1], parts[3]
         if not valid_tenant(tenant) or not device or any(ord(ch) < 0x20 for ch in device):
             return self._json(400, {"message": "topic 中的租户或设备名不合法"})

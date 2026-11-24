@@ -205,7 +205,7 @@ ensure_action() {
 ensure_rule() {
   local resp code sql create_payload update_payload
   resp="$(new_tmp)"
-  sql='SELECT topic, payload FROM "walle/+/device/+/alarm"'
+  sql='SELECT topic, payload FROM "walle/+/device/+/alarm/report"'
 
   create_payload="$(printf '{"id":"walle_alarm_persist","sql":%s,"actions":["http:walle_alarm_hook"],"enable":true,"description":%s}' \
     "$(json_str "$sql")" "$(json_str "walle 告警落库：转发到 walle_api")")"
@@ -260,7 +260,7 @@ walle 服务 : 运行中
 EMQX API   : $EMQX_API
 Connector  : $CONNECTOR_ID
 Action     : $ACTION_ID
-Rule       : $RULE_ID（订阅 walle/+/device/+/alarm）
+Rule       : $RULE_ID（订阅 walle/+/device/+/alarm/report）
 ============================================
 EOF
 }
