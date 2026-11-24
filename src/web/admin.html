@@ -236,9 +236,9 @@
     <p class="lead">当前接入 EMQX 的客户端连接，支持按客户端 ID、用户名、IP 模糊过滤；数据来自 <code>/emqx-api/clients</code>。</p>
     <div class="card">
       <div class="user-form">
-        <input id="mc-q-clientid" placeholder="客户端 ID（模糊）" autocomplete="off" />
-        <input id="mc-q-username" placeholder="用户名（模糊）" autocomplete="off" />
-        <input id="mc-q-ip" placeholder="IP 地址" autocomplete="off" />
+        <input id="mc-q-clientid" name="mc-filter-clientid" placeholder="客户端 ID（模糊）" autocomplete="new-password" />
+        <input id="mc-q-username" name="mc-filter-username" placeholder="用户名（模糊）" autocomplete="new-password" />
+        <input id="mc-q-ip" name="mc-filter-ip" placeholder="IP 地址" autocomplete="new-password" />
         <button class="btn" id="mc-refresh">刷新</button>
         <button class="btn" id="mc-export">导出 CSV</button>
         <span id="mc-count" style="align-self:center;color:var(--muted);font-size:12px"></span>
@@ -503,7 +503,7 @@ function showPanel(name) {
   nav.querySelectorAll(".menu-item").forEach(i => i.classList.remove("active"));
   if (el) { el.classList.add("active"); crumb.textContent = el.textContent.trim(); }
   if (name === "mqtt-users") loadUsers();
-  if (name === "mqtt-clients") loadMqttClients();
+  if (name === "mqtt-clients") { clearMqttFilterAutofill(); loadMqttClients(); }
   if (name === "bindings") loadBindings();
   if (name === "srs-auth") loadStreamSecret();
   if (name === "sys-status") loadSystemStatus();
@@ -736,6 +736,25 @@ function mcFilters() {
     ip: document.getElementById("mc-q-ip").value.trim().toLowerCase(),
   };
 }
+// 浏览器密码管理器会把登录用户名自动填进页面第一个文本框，导致客户端过滤条件变成 admin；
+// 这里只清掉“等于当前登录用户名”的过滤值，不影响用户手动输入的其它条件。
+function clearMqttFilterAutofill() {
+  const user = (sessionStorage.getItem(USER_KEY) || "").trim();
+  let changed = false;
+  ["mc-q-clientid", "mc-q-username", "mc-q-ip"].forEach(id => {
+    const input = document.getElementById(id);
+    if (!input) return;
+    if (user && input.value.trim() === user) { input.value = ""; changed = true; }
+  });
+  if (changed && mcLoaded) renderMqttClients();
+}
+function resetMqttFilters() {
+  ["mc-q-clientid", "mc-q-username", "mc-q-ip"].forEach(id => {
+    const input = document.getElementById(id);
+    if (input) input.value = "";
+  });
+  if (mcLoaded) renderMqttClients();
+}
 function mcFiltered() {
   const f = mcFilters();
   return mcCache.filter(c =>
@@ -750,6 +769,7 @@ function mcTime(s) {
   return isNaN(d) ? s : d.toLocaleString("zh-CN", { hour12: false });
 }
 async function loadMqttClients() {
+  clearMqttFilterAutofill();
   const tb = document.getElementById("mc-tbody");
   if (!mcLoaded) tb.innerHTML = '<tr><td colspan="9" style="color:var(--muted)">加载中…</td></tr>';
   try {
@@ -809,6 +829,13 @@ document.getElementById("mc-refresh").addEventListener("click", loadMqttClients)
 document.getElementById("mc-export").addEventListener("click", exportMqttClients);
 ["mc-q-clientid", "mc-q-username", "mc-q-ip"].forEach(id =>
   document.getElementById(id).addEventListener("input", renderMqttClients));
+// 刷新页面时浏览器可能恢复/自动填充表单，这里在加载后清掉误填的登录名
+resetMqttFilters();
+setTimeout(clearMqttFilterAutofill, 300);
+window.addEventListener("pageshow", () => {
+  resetMqttFilters();
+  setTimeout(clearMqttFilterAutofill, 300);
+});
 document.getElementById("mc-tbody").addEventListener("click", e => {
   const btn = e.target.closest("button[data-act='kick']");
   if (btn) kickClient(btn.dataset.client);
