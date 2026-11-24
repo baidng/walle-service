@@ -948,7 +948,7 @@ class Handler(BaseHTTPRequestHandler):
                     tenant,
                     device,
                     alarm_text(payload, "hostname") or None,
-                    alarm_text(payload, "device_id") or alarm_text(payload, "uuid") or None,
+                    alarm_text(payload, "device_id") or device or None,
                     alarm_text(payload, "ip", 64) or None,
                     event or None,
                     level,

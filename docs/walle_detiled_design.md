@@ -289,11 +289,11 @@ walle 是面向树莓派小车的远程控制平台。服务端由三部分组�
 ### 9.1 数据链路
 
 ```text
-设备 publish walle/{tenant}/device/{device}/alarm
+设备 publish walle/{tenant}/device/{device}/alarm/report
         │
         ▼
 EMQX 规则引擎 walle_alarm_persist
-  SQL: SELECT topic, payload FROM "walle/+/device/+/alarm"
+  SQL: SELECT topic, payload FROM "walle/+/device/+/alarm/report"
         │
         ▼ HTTP action walle_alarm_hook
    POST http://127.0.0.1:9000/api/internal/alarms
@@ -320,7 +320,7 @@ walle_api 按会话角色限定 tenant → 按时间倒序分页返回
 
 ### 9.2 主题与载荷
 
-实际主题：`walle/{tenant}/device/{device}/alarm`。
+实际主题：`walle/{tenant}/device/{device}/alarm/report`。
 
 | 字段 | 必填 | 说明 |
 |---|---|---|
@@ -332,7 +332,7 @@ walle_api 按会话角色限定 tenant → 按时间倒序分页返回
 | `timestamp` | 否 | 设备发生时间，秒/毫秒/微秒时间戳或 ISO 8601；兼容 `ts`、`occurred_at`、`time` |
 | `datetime` | 否 | 可直接展示的时间文本，优先使用；缺失时按 `occurred_at` 本地格式化 |
 | `hostname` | 否 | 设备展示名 |
-| `device_id` / `uuid` | 否 | 设备唯一标识 |
+| `device_id` | 否 | 设备唯一标识（v1.12 起不再使用 uuid，缺省时取主题中的 device 段） |
 | `ip` | 否 | 设备 IP |
 
 时间处理规则：
@@ -372,6 +372,9 @@ CREATE INDEX idx_alarms_device_time ON alarms(device, occurred_at DESC);
 CREATE INDEX idx_alarms_time        ON alarms(occurred_at DESC);
 ```
 
+> `alarms.device_uuid` 为历史列名：MQTT v1.12 起报文不再携带 uuid，该列现在存 `device_id`
+> （缺省取主题中的 device 段），仅用于兼容已有数据库。
+
 - `detail` 保存完整 payload JSON，便于后续排障与字段扩展。
 - SQLite 开启 WAL，连接设置 `busy_timeout=5000`，避免规则回调与页面查询互相阻塞。
 - 保留期按 `occurred_at` 计算，默认 30 天；接入请求触发的清理最多每小时执行一次，也可通过 `WALLE_ALARM_RETENTION_DAYS` 调整。
@@ -384,7 +387,7 @@ CREATE INDEX idx_alarms_time        ON alarms(occurred_at DESC);
 |---|---|
 | 来源限制 | 仅接受 `127.0.0.1` / `::1`；Nginx 对 `/api/internal/` 配置 `deny all` |
 | 鉴权 | 请求头 `X-Walle-Ingest` 必须等于 `etc/walle.conf` 的 `WALLE_INGEST_TOKEN` |
-| 请求体 | `{"topic":"walle/{tenant}/device/{device}/alarm","payload":{...}}`；`payload` 可为对象或 JSON 字符串 |
+| 请求体 | `{"topic":"walle/{tenant}/device/{device}/alarm/report","payload":{...}}`；`payload` 可为对象或 JSON 字符串 |
 | 成功响应 | `200 {"ok":true,"duplicate":false,"id":123}` |
 | 重复消息 | `200 {"ok":true,"duplicate":true,"id":...}` |
 | 失败响应 | `400` 主题/载荷不合法；`403` 来源或 token 不合法；`503` 未配置 token |
@@ -418,7 +421,7 @@ CREATE INDEX idx_alarms_time        ON alarms(occurred_at DESC);
 
 普通用户控制台「告警信息」面板分为「当前」「历史」两个子 Tab：
 
-- **当前**：只显示本次页面打开后通过 MQTT 实时收到的 `walle/{tenant}/device/+/alarm` 告警，不再限制当前选中设备。内存中保留最近 300 条，每页 30 条；超过一页时底部显示「上一页 / 下一页」。新到的告警在行尾显示未读红点，点击该条后红点消失；存在未读告警时左侧「告警信息」菜单右侧也显示红点，「全部已读」按钮可一次清除全部未读标记。
+- **当前**：只显示本次页面打开后通过 MQTT 实时收到的 `walle/{tenant}/device/+/alarm/report` 告警，不再限制当前选中设备。内存中保留最近 300 条，每页 30 条；超过一页时底部显示「上一页 / 下一页」。新到的告警在行尾显示未读红点，点击该条后红点消失；存在未读告警时左侧「告警信息」菜单右侧也显示红点，「全部已读」按钮可一次清除全部未读标记。
 - **历史**：从 `/api/alarms` 查询数据库，每页固定最多 30 条；超过一页时底部显示「第1页、第2页、…、最后页」，点击页码直接跳转。
 - **过滤栏**：仅历史 Tab 显示，包含设备下拉（含「全部设备」）、开始/结束时间（`datetime-local`，未选择时显示「—」，表示不加时间过滤）和「查询」「清除」。点击查询从第 1 页重新检索；切换页码沿用当前过滤条件。
 - 进入历史 Tab 的首次操作会加载全部告警（不加时间过滤、全部设备）的第 1 页；之后切换 Tab 保留已查结果，避免重复请求。
@@ -433,7 +436,7 @@ CREATE INDEX idx_alarms_time        ON alarms(occurred_at DESC);
 |---|---|---|
 | Connector | `http:walle_alarm_http` | `url=http://127.0.0.1:9000`，`pool_size=4` |
 | Action | `http:walle_alarm_hook` | `POST /api/internal/alarms`，请求头带 `X-Walle-Ingest` |
-| Rule | `walle_alarm_persist` | `SELECT topic, payload FROM "walle/+/device/+/alarm"` |
+| Rule | `walle_alarm_persist` | `SELECT topic, payload FROM "walle/+/device/+/alarm/report"` |
 
 Action body 模板：
 
@@ -445,7 +448,7 @@ Action body 模板：
 
 - 模板要求 `payload` 本身是合法 JSON 对象；设备侧告警载荷必须是 JSON。
 - `X-Walle-Ingest` 必须与 `etc/walle.conf` 中的 `WALLE_INGEST_TOKEN` 完全一致，轮换 token 时需同时更新 Connector/Action 与配置文件。
-- 规则只订阅 `walle/{tenant}/device/{device}/alarm`，不会把其他主题写入告警表。
+- 规则只订阅 `walle/{tenant}/device/{device}/alarm/report`，不会把其他主题写入告警表。
 - 规则、Action、Connector 的状态可在 EMQX Dashboard「集成 → 规则」中查看，失败重试次数由 Action 的 `max_retries` 控制。
 
 ### 9.8 运维与限制
@@ -461,26 +464,38 @@ Action body 模板：
 
 ### 10.1 主题规范
 
-| Topic | 方向 | 用途 | QoS |
-|---|---|---|---|
-| `walle/{tenant}/device/{device}/cmd` | 平台 → 小车 | 运动、录像、模式、鸣笛、灯光等指令 | 1 |
-| `walle/{tenant}/device/{device}/state` | 小车 → 平台 | 位置、电量、传感器状态上报 | 1 |
-| `walle/{tenant}/device/{device}/alarm` | 小车 → 平台 | 碰撞、低电量、离线等告警事件 | 1 |
-| `walle/{tenant}/device/{device}/heartbeat` | 小车 → 平台 | 心跳，默认 30s | 0 |
+主题结构：`walle/{tenant}/device/{device}/{resource}`。完整契约以
+`walle-ai/doc/MQTT_protocol_convention.md`（v1.12）为准，服务端只依赖以下主题：
+
+| 能力 | 平台 → 设备（请求/命令） | 设备 → 平台（应答/上报） |
+|---|---|---|
+| 上线/下线 | — | `online`（retained + LWT） |
+| 设备发现 | `walle/{tenant}/discovery/query/request` | `discovery/query/response` |
+| 基础状态 | `baseState/query/request` | `baseState/query/response` |
+| 运行状态 | `runState/query/request` | `runState/query/response` |
+| 告警 | — | `alarm/report` |
+| 推流 | `video/start/request`、`video/stop/request` | `video/start/response`、`video/stop/response` |
+| 手机音频 | `phone/audio/send/request`、`phone/audio/stop/request` | 对应 `response`（Web 不订阅） |
+| 录像 | `record/start/request`、`record/stop/request`、`record/delete/request`、`record/list/query/request`、`record/play/start/request`、`record/play/stop/request` | 对应 `response` |
+| 车控 | `car/motor/set/cmd`、`car/servo/set/cmd`、`car/servo/status/query/request` | `car/servo/status/query/response` |
 
 约定：
 
-- `tenant` 为客户用户名，`device` 为设备用户名，且位于固定主题段 `device/` 之后；ACL 按客户（`walle/{tenant}/#`）、设备（`walle/{tenant}/device/${clientid}/#` 与 `walle/{tenant}/discovery/query`）、agent（`walle/{tenant}/agents/${clientid}/#` 与本租户 `walle/{tenant}/device/#`）三类授予。
-- 指令载荷建议 JSON：`{"method":"move","value":"forward","seq":123,"ts":...}`，`seq` 用于设备端去重。
-- 运动指令采用“按下发、松开停”语义，前端在 `mouseup`/`mouseleave`/`touchend` 时发 `stop`，防止失控。
+- `tenant` 为客户用户名；主题第 4 段 `device` 为稳定的 `device_id`，不是 MQTT 用户名。
+- ACL 按客户（`walle/{tenant}/#`）、设备（`walle/{tenant}/device/${clientid}/#`
+  与 `walle/{tenant}/discovery/query/request`）、agent（`walle/{tenant}/agents/${clientid}/#`
+  与本租户 `walle/{tenant}/device/#`）三类授予。
+- v1.12 起请求与应答均不再携带 `uuid`，设备身份只使用主题中的 `device_id`。
+- `car/motor/set/cmd`、`car/servo/set/cmd` 为无应答的持续控制主题，执行结果只写设备端日志。
 
 ### 10.2 设备侧状态
 
-| 事件 | 上报主题 | 预期周期 |
+| 数据 | 来源 | 说明 |
 |---|---|---|
-| 心跳 | `heartbeat` | 30s；平台超过 3min 无心跳判离线 |
-| 状态 | `state` | 1s（位置/速度）、30s（电量） |
-| 告警 | `alarm` | 事件触发即上报 |
+| 在线状态 | `online` | retained 上线报文 + LWT 遗嘱 |
+| 基础状态 | `baseState/query/response` | 按需查询，不落盘 |
+| 运行状态 | `runState/query/response` | 按需查询推流/音频/录像/电机/舵机/电池/声呐 |
+| 告警 | `alarm/report` | 主动上报，由 EMQX 规则落库 |
 
 ### 10.3 测试用客户端
 
@@ -564,7 +579,7 @@ Action body 模板：
 | 能力 | 建议接口 | 实现方式 |
 |---|---|---|
 | 设备列表/详情 | `GET /walle-api/devices` | 后端读设备表或 EMQX 在线状态 |
-| 指令下发 | `POST /walle-api/devices/{id}/cmd` | 后端用 MQTT 客户端 publish 到 `walle/{tenant}/device/{device}/cmd` |
+| 指令下发 | `POST /walle-api/devices/{id}/cmd` | 后端用 MQTT 客户端 publish 到 `walle/{tenant}/device/{device}/car/motor/set/cmd` |
 | 录像检索 | `GET /walle-api/recordings` | SRS DVR 产出文件索引 |
 | 重启/运维动作 | `POST /walle-api/ops/{action}` | 后端受限执行 systemctl，禁止前端直调 |
 
@@ -594,9 +609,9 @@ recording (id, device_id, path, start_at, end_at, size, trigger)
 
 约定：
 
-- `device` 即设备用户名，位于主题固定段 `device/` 之后；`tenant` 为客户用户名。
+- `device` 为稳定的 `device_id`，位于主题固定段 `device/` 之后；`tenant` 为客户用户名。
 - 客户、设备、agent 三者 1:1（`bindings(device 主键, customer UNIQUE, agent UNIQUE)`），管理员可见全部。
-- 用户与 MQTT 凭据一一映射，ACL 按客户 / 设备 / agent 三类生成：客户 `walle/{tenant}/#`；设备 `walle/{tenant}/device/${clientid}/#` 与 `walle/{tenant}/discovery/query`；agent `walle/{tenant}/agents/${clientid}/#` 与本租户 `walle/{tenant}/device/#`。
+- 用户与 MQTT 凭据一一映射，ACL 按客户 / 设备 / agent 三类生成：客户 `walle/{tenant}/#`；设备 `walle/{tenant}/device/${clientid}/#` 与 `walle/{tenant}/discovery/query/request`；agent `walle/{tenant}/agents/${clientid}/#` 与本租户 `walle/{tenant}/device/#`。
 - 告警按 `tenant` 隔离，客户查询时由服务端强制追加租户条件。
 
 ---

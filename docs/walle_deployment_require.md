@@ -390,7 +390,7 @@ curl -s -u "$KEY:$SECRET" \
 
 ### 9.2 配置告警落库规则（必须）
 
-- 1. 告警历史依赖 EMQX 规则引擎，把 `walle/{tenant}/device/{device}/alarm` 回调给 `walle_api.py`，然后创建 Connector、Action、Rule（EMQX 6.3.2 的 REST 接口）。
+- 1. 告警历史依赖 EMQX 规则引擎，把 `walle/{tenant}/device/{device}/alarm/report` 回调给 `walle_api.py`，然后创建 Connector、Action、Rule（EMQX 6.3.2 的 REST 接口）。
 
 执行脚本创建内置数据库认证器
 
