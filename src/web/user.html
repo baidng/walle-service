@@ -842,7 +842,22 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
       history: { items: [], page: 1, pages: 0, total: 0, loaded: false, filter: null } },
     statePending: null, offline: {} };
   var reconnectTimer = null, mqtt;
-  var CLIENT_ID = 'walle-web-' + Math.random().toString(16).slice(2, 10);
+  var CLIENT_ID_KEY = 'walle_client_id';
+  function randomClientSuffix() {
+    var s = '';
+    while (s.length < 8) s += Math.random().toString(36).slice(2);
+    return s.slice(0, 8);
+  }
+  // 登录成功后调用：优先复用本地保存的 client_id，刷新/重启浏览器后保持不变
+  function loadOrCreateClientId() {
+    var saved = '';
+    try { saved = localStorage.getItem(CLIENT_ID_KEY) || ''; } catch (e) {}
+    if (/^web-[a-z0-9]{8}$/.test(saved)) return saved;
+    var id = 'web-' + randomClientSuffix();
+    try { localStorage.setItem(CLIENT_ID_KEY, id); } catch (e) {}
+    return id;
+  }
+  var CLIENT_ID = loadOrCreateClientId();
   function clientIdNow() { return CLIENT_ID; }
 
   var TE = new TextEncoder();
