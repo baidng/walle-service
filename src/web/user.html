@@ -341,7 +341,9 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
 .agentCard .agEstop{border-color:rgba(255,107,107,.5);background:rgba(255,107,107,.14);
   color:#ffd7d7;font-weight:600}
 .agentCard .agEstop:hover{background:rgba(255,107,107,.24)}
-.agentCard .agMessages{height:min(46vh,420px);overflow-y:auto;display:flex;flex-direction:column;gap:10px;
+/* 卡片高度固定为可视区剩余高度（不随消息增长），消息区内部滚动；窗口过矮时不低于 569px */
+.agentCard{display:flex;flex-direction:column;height:calc(100vh - 152px);min-height:569px}
+.agentCard .agMessages{flex:1 1 auto;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:10px;
   padding:12px;border:1px solid var(--line);border-radius:12px;background:rgba(10,13,19,.45)}
 .agentCard .agMsg{max-width:82%;padding:9px 12px;border-radius:12px;font-size:13px;
   white-space:pre-wrap;word-break:break-word;line-height:1.5}
@@ -367,7 +369,6 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
 .agentCard .agComposer button:disabled{opacity:.5;cursor:not-allowed}
 .agentCard .agHint{padding:10px 0 0;font-size:11px;color:var(--dim)}
 @media(max-width:900px){
-  .agentCard .agMessages{height:min(48vh,360px)}
   .agentCard .agHeadOps{justify-content:flex-start}
 }
 .sideNavItem.active .navIcon{opacity:1;color:var(--accent)}
