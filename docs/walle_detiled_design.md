@@ -465,7 +465,7 @@ Action body 模板：
 ### 10.1 主题规范
 
 主题结构：`walle/{tenant}/device/{device}/{resource}`。完整契约以
-`walle-ai/doc/MQTT_protocol_convention.md`（v1.13）为准，服务端只依赖以下主题：
+`walle-ai/doc/MQTT_protocol_convention.md`（v1.15）为准，服务端只依赖以下主题：
 
 | 能力 | 平台 → 设备（请求/命令） | 设备 → 平台（应答/上报） |
 |---|---|---|
@@ -475,6 +475,7 @@ Action body 模板：
 | 基础状态 | `baseState/query/request` | `baseState/query/response` |
 | 运行状态 | `runState/query/request` | `runState/query/response` |
 | 告警 | — | `alarm/report` |
+| 控制权 | `control/acquire/request`、`control/release/request` | `control/acquire/response`、`control/release/response`（含 `control_holder`） |
 | 推流 | `video/start/request`、`video/stop/request` | `video/start/response`、`video/stop/response` |
 | 手机音频 | `phone/audio/send/request`、`phone/audio/stop/request` | 对应 `response`（Web 不订阅） |
 | 录像 | `record/start/request`、`record/stop/request`、`record/delete/request`、`record/list/query/request`、`record/play/start/request`、`record/play/stop/request` | 对应 `response` |
@@ -487,6 +488,8 @@ Action body 模板：
   `walle/{tenant}/discovery/query/request` 与 `walle/{tenant}/client/+/online`）、
   agent（`walle/{tenant}/agents/${clientid}/#` 与本租户 `walle/{tenant}/device/#`）三类授予。
 - v1.12 起请求与应答均不再携带 `uuid`，设备身份只使用主题中的 `device_id`。
+- v1.14 起 App/Web 发往设备的所有 `.../request` 与 `.../cmd` 统一携带 `client_id`、`client_name`，与 presence 报文一致。
+- v1.15 新增设备控制权租约：`runState/query/response` 含 `control_holder`；非 holder 的控制请求被拒（请求-应答返回 `result=-4`、`error_code="control_denied"`，`.../cmd` 无应答）。控制权主题都在设备子树下，无需新增 ACL。
 - `car/motor/set/cmd`、`car/servo/set/cmd` 为无应答的持续控制主题，执行结果只写设备端日志。
 
 ### 10.2 设备侧状态
@@ -496,7 +499,7 @@ Action body 模板：
 | 在线状态 | `online` | retained 上线报文 + LWT 遗嘱 |
 | 客户端在线 | `client/{client_id}/online` | App/Web retained 上线；设备端订阅 `client/+/online` |
 | 基础状态 | `baseState/query/response` | 按需查询，不落盘 |
-| 运行状态 | `runState/query/response` | 按需查询推流/音频/录像/电机/舵机/电池/声呐 |
+| 运行状态 | `runState/query/response` | 按需查询推流/音频/录像/电机/舵机/电池/声呐；含 `control_holder`（V1.15） |
 | 告警 | `alarm/report` | 主动上报，由 EMQX 规则落库 |
 
 ### 10.3 测试用客户端
