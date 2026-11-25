@@ -1071,7 +1071,7 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
     if (mqtt && mqtt.ws) { try { mqtt.ws.onclose = null; mqtt.ws.close(); } catch (e) {} }
     mqtt = new MqttWS();
     mqtt.topics = SUBS.map(function (r) { return subBase() + r; });
-    var agentPrefix = cfg.prefix.replace(/\/+$/, '') + '/' + tenant() + '/agents/';
+    var agentPrefix = cfg.prefix.replace(/\/+$/, '') + '/' + tenant() + '/agent/';
     mqtt.topics.push(agentPrefix + '+/online', agentPrefix + '+/chat/response');
     mqtt.connect({
       url: wsUrlNow(), user: cfg.user, pass: cfg.pass, clientId: clientIdNow(), keepalive: 60,
@@ -1106,8 +1106,8 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
   }
   function onMessage(topic, data, retain) {
     var ap = topic.split('/');
-    // agents/{id}/online 是 5 段，chat/response 是 6 段；去掉 v1 后不能再按 6 段判断
-    if (ap.length >= 5 && ap[2] === 'agents') {
+    // agent/{id}/online 是 5 段，chat/response 是 6 段；去掉 v1 后不能再按 6 段判断
+    if (ap.length >= 5 && ap[2] === 'agent') {
       var agentId = ap[3];
       if (/\/online$/.test(topic)) {
         document.dispatchEvent(new CustomEvent('walle-agent-status',
@@ -1148,7 +1148,7 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
   window.__walleDevice = function (dev) { return (ui.devices && ui.devices[dev]) || null; };
   window.__walleDeviceBase = function (dev) { return base(dev); };
   window.__walleAgentBase = function () {
-    return cfg.prefix.replace(/\/+$/, '') + '/' + tenant() + '/agents/';
+    return cfg.prefix.replace(/\/+$/, '') + '/' + tenant() + '/agent/';
   };
   function discover() {
     if (!mqtt || !mqtt.connected) return;
