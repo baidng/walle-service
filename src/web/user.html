@@ -160,6 +160,13 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
   font-size:12px;color:var(--dim)}
 .leaseBar b{font-weight:600;color:var(--text)}
 .leaseBar .btn{margin-left:auto;height:28px;padding:0 10px;font-size:11px}
+.field{display:flex;flex-direction:column;gap:6px}
+.field label{font-size:11.5px;color:var(--muted)}
+.field .hint{font-size:10.5px;line-height:1.55;color:var(--dim)}
+.wsRow{display:flex;align-items:center;gap:9px}
+.wsRow .input{flex:1;min-width:0}
+.wsRow .btn{flex:none;height:38px}
+.hint.ok{color:#9ff0cf}
 .videoCard .cardHead{display:flex;align-items:center;gap:10px}
 .videoTitle{flex:1;min-width:0}
 .videoMsg{margin-top:9px;font-size:11.5px;line-height:1.55;color:var(--dim);max-height:64px;overflow:auto;word-break:break-word}
@@ -458,6 +465,9 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
         <button class="sideNavItem" data-tab="agent">
           <span class="navIcon">◈</span><span>对话助手</span>
         </button>
+        <button class="sideNavItem" data-tab="web-settings">
+          <span class="navIcon">⚙</span><span>web端设置</span>
+        </button>
       </nav>
     </aside>
 
@@ -480,6 +490,7 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
       <div class="tabPanel" data-tab="video-record"></div>
       <div class="tabPanel" data-tab="alarm"></div>
       <div class="tabPanel" data-tab="agent"></div>
+      <div class="tabPanel" data-tab="web-settings"></div>
 
       <!-- 原有卡片（JS 会移动到上面的 tabPanel 中） -->
       <section class="card statusCard" data-tab-target="device-detail">
@@ -509,12 +520,6 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
 
       <div class="stateSplit"></div>
 
-      <div class="leaseBar">
-        <span>设备控制者</span>
-        <b id="leaseOwner">—</b>
-        <button id="btnLease" class="btn" type="button">申请控制权限</button>
-      </div>
-
       <div class="cardHead">
         <div>
           <h2>运行状态</h2>
@@ -541,6 +546,7 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
         <div class="metric"><label>舵机</label><b id="rServo">—</b></div>
         <div class="metric"><label>电压</label><b id="rBattery">—</b></div>
         <div class="metric"><label>声呐距离</label><b id="rSonar">—</b></div>
+        <div class="metric"><label>控制权限拥有者</label><b id="ctrlOwnerName">-</b></div>
       </div>
     </section>
     <section class="card videoCard" data-tab-target="video-monitor">
@@ -731,6 +737,40 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
       <div id="alarmList" class="alarmList"><div class="emptyState">暂无告警</div></div>
       <div id="alarmPager" class="alarmPager"></div>
     </section>
+
+    <!-- ============ web端设置卡片 ============ -->
+    <section class="card" data-tab-target="web-settings">
+      <div class="cardHead">
+        <div>
+          <h2>web端设置</h2>
+          <small>仅本机生效 · 不写入设备</small>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>客户端名字</label>
+        <div class="wsRow">
+          <input id="fClientName" class="input" placeholder="如：Web、我的电脑" spellcheck="false">
+          <button id="btnSaveClientName" class="btn primary" type="button">保存</button>
+        </div>
+        <div id="wsClientMsg" class="hint">作为 client_name 随请求上报，并显示在设备控制权限的持有者里。</div>
+      </div>
+
+      <div class="stateSplit"></div>
+
+      <div class="cardHead">
+        <div>
+          <h2>控制权限</h2>
+          <small>control/acquire|release/request → response</small>
+        </div>
+      </div>
+      <div class="leaseBar">
+        <span>设备控制者</span>
+        <b id="leaseOwner">无</b>
+        <button id="btnLease" class="btn" type="button">申请控制权限</button>
+      </div>
+      <div id="leaseMsg" class="videoMsg">—</div>
+    </section>
     </main><!-- /mainArea -->
   </div><!-- /layout -->
 </div>
@@ -761,7 +801,8 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
   var DEFAULTS = {
     prefix: 'walle',
     device: '',
-    videoRoom: ''
+    videoRoom: '',
+    clientName: 'Web'
   };
   var cfg = loadCfg();
   cfg.user = sessionStorage.getItem(USER_KEY) || '';
@@ -778,7 +819,7 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
   function saveCfg() {
     try {
       localStorage.setItem(LS_KEY, JSON.stringify({
-        prefix: cfg.prefix, device: cfg.device, videoRoom: cfg.videoRoom
+        prefix: cfg.prefix, device: cfg.device, videoRoom: cfg.videoRoom, clientName: cfg.clientName
       }));
     } catch (e) {}
   }
@@ -802,7 +843,8 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
   var el = {};
   ['deviceSelect', 'connChip', 'connText',
    'mCpu', 'bCpu', 'mTemp', 'bTemp', 'mMem', 'bMem', 'mUptime', 'bUp', 'dHost', 'dOs', 'dLoad', 'dNet',
-   'dDisk', 'dUsb', 'btnRefreshState', 'leaseOwner', 'btnLease',
+   'dDisk', 'dUsb', 'btnRefreshState', 'leaseOwner', 'btnLease', 'leaseMsg', 'ctrlOwnerName',
+   'btnSaveClientName', 'wsClientMsg', 'fClientName',
    'rVideo', 'rVideoSub', 'rAudio', 'rAudioSub', 'rRecord', 'rRecordSub',
    'rMotor', 'rServo', 'rBattery', 'rSonar', 'btnCapability', 'videoEl',
    'videoEmpty', 'videoHint', 'btnVideoAction', 'btnVideoStop', 'btnVideoSound',
@@ -856,7 +898,7 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
   function clientIdNow() { return CLIENT_ID; }
   var WEB_VERSION_CODE = 3;
   var WEB_VERSION_NAME = '0.1.3';
-  function clientName() { return 'Web'; }
+  function clientName() { return String(cfg.clientName || '').trim() || 'Web'; }
   function clientOnlineTopic() {
     return cfg.prefix.replace(/\/+$/, '') + '/' + tenant() + '/client/' + clientIdNow() + '/online';
   }
@@ -1391,21 +1433,23 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
     ui.control.seen[dev] = true;
     if (dev === cfg.device) renderControlState();
   }
-  /** 刷新“设备控制者”一行：自己持有显示释放，别人持有不显示按钮。 */
+  /** 刷新设备详情里的控制权限小卡片，以及 web端设置里的“设备控制者”一行。 */
   function renderControlState() {
-    if (!el.leaseOwner || !el.btnLease) return;
-    if (!cfg.device) {
-      el.leaseOwner.textContent = '—';
-      el.btnLease.style.display = 'none';
-      return;
-    }
-    if (ui.offline[cfg.device]) {
-      el.leaseOwner.textContent = '—';
-      el.btnLease.style.display = 'none';
-      return;
-    }
+    var dev = cfg.device;
     var h = controlHolder();
-    var known = controlKnown(cfg.device);
+    var offline = !!(dev && ui.offline[dev]);
+    if (el.ctrlOwnerName) {
+      var show = !!h && !offline;
+      el.ctrlOwnerName.textContent = show ? holderLabel(h) + (h.self ? '（本机）' : '') : '-';
+      el.ctrlOwnerName.classList.toggle('on', show);
+    }
+    if (!el.leaseOwner || !el.btnLease) return;
+    if (!dev || offline) {
+      el.leaseOwner.textContent = '—';
+      el.btnLease.style.display = 'none';
+      return;
+    }
+    var known = controlKnown(dev);
     el.leaseOwner.textContent = h ? holderLabel(h) : (known ? '无' : '查询中…');
     if (h && !h.self) {
       el.btnLease.style.display = 'none';
@@ -1416,7 +1460,12 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
       ? '处理中…'
       : (h && h.self ? '释放控制权' : '申请控制权限');
     el.btnLease.disabled = !!ui.control.pending
-      || !mqtt || !mqtt.connected || !!ui.offline[cfg.device];
+      || !mqtt || !mqtt.connected || !!ui.offline[dev];
+  }
+  function setLeaseMsg(text, cls) {
+    if (!el.leaseMsg) return;
+    el.leaseMsg.textContent = text;
+    el.leaseMsg.className = 'videoMsg' + (cls ? ' ' + cls : '');
   }
   /** 非 holder 的操作为拒绝：写入对应区域的状态文案并返回 true。 */
   function controlDenied(setter, action) {
@@ -1432,19 +1481,19 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
   function controlAcquire(dev) {
     dev = dev || cfg.device;
     if (!mqtt || !mqtt.connected || !dev) {
-      setVideoMsg('MQTT 未连接或未选择设备', 'err');
+      setLeaseMsg('MQTT 未连接或未选择设备', 'err');
       return;
     }
     if (ui.control.pending) return;
     var id = rid();
     if (!mqtt.publish(base(dev) + '/control/acquire/request', { request_id: id })) {
-      setVideoMsg('control/acquire/request 发送失败', 'err');
+      setLeaseMsg('control/acquire/request 发送失败', 'err');
       return;
     }
     ui.control.pending = { dev: dev, rid: id, timer: setTimeout(function () {
       if (!ui.control.pending) return;
       ui.control.pending = null;
-      setVideoMsg('等待 control/acquire/response 超时（5s）', 'err');
+      setLeaseMsg('等待 control/acquire/response 超时（5s）', 'err');
       renderControlState();
     }, CTRL_WAIT_MS) };
     renderControlState();
@@ -1452,19 +1501,19 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
   function controlRelease(dev) {
     dev = dev || cfg.device;
     if (!mqtt || !mqtt.connected || !dev) {
-      setVideoMsg('MQTT 未连接或未选择设备', 'err');
+      setLeaseMsg('MQTT 未连接或未选择设备', 'err');
       return;
     }
     if (ui.control.pending) return;
     var id = rid();
     if (!mqtt.publish(base(dev) + '/control/release/request', { request_id: id })) {
-      setVideoMsg('control/release/request 发送失败', 'err');
+      setLeaseMsg('control/release/request 发送失败', 'err');
       return;
     }
     ui.control.pending = { dev: dev, rid: id, timer: setTimeout(function () {
       if (!ui.control.pending) return;
       ui.control.pending = null;
-      setVideoMsg('等待 control/release/response 超时（5s）', 'err');
+      setLeaseMsg('等待 control/release/response 超时（5s）', 'err');
       renderControlState();
     }, CTRL_WAIT_MS) };
     renderControlState();
@@ -1480,7 +1529,7 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
     applyHolderFrom(dev, data);
     renderControlState();
     if (data.result !== 0) {
-      setVideoMsg('获取控制权失败：' + (data.cause || ('result=' + data.result)), 'err');
+      setLeaseMsg('获取控制权失败：' + (data.cause || ('result=' + data.result)), 'err');
     }
   }
   function onControlReleaseResult(dev, data) {
@@ -1494,7 +1543,7 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
     applyHolderFrom(dev, data);
     renderControlState();
     if (data.result !== 0) {
-      setVideoMsg('释放控制权失败：' + (data.cause || ('result=' + data.result)), 'err');
+      setLeaseMsg('释放控制权失败：' + (data.cause || ('result=' + data.result)), 'err');
     }
   }
 
@@ -3026,6 +3075,24 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
   });
   el.btnRefreshState.addEventListener('click', refreshAll);
   el.btnCapability.addEventListener('click', refreshVideoState);
+  function saveClientName() {
+    var name = String(el.fClientName.value || '').trim() || 'Web';
+    cfg.clientName = name;
+    saveCfg();
+    el.fClientName.value = name;
+    // 自己持有的控制权立即改用新名字显示；设备回报后会再次同步
+    Object.keys(ui.control.byDevice).forEach(function (d) {
+      var h = ui.control.byDevice[d];
+      if (h && h.self) h.client_name = name;
+    });
+    publishClientPresence(true);
+    renderControlState();
+    if (el.wsClientMsg) {
+      el.wsClientMsg.textContent = '已保存：' + name + '（随请求上报 client_name）';
+      el.wsClientMsg.className = 'hint ok';
+    }
+  }
+  el.btnSaveClientName.addEventListener('click', saveClientName);
   el.btnLease.addEventListener('click', function () {
     var h = controlHolder();
     if (h && h.self) controlRelease();
@@ -3147,6 +3214,7 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
   if (cfg.videoRoom) ui.video.room = cfg.videoRoom;
   el.videoHint.textContent = '页面不自动拉流。file:// 直接打开时，HTTPS WHEP 可能被 CORS/证书拦截；建议在 web/ 下起本地静态服务。';
   servoSetEnabled(false, '相机方位未启用', null);
+  el.fClientName.value = clientName();
   renderControlState();
 
   /* ============ 新布局初始化：DOM 重排 + 侧边栏 + 设备卡片 ============ */
