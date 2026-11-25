@@ -30,6 +30,11 @@ scope：必填
   - mqtt：mqtt协议
   - webrtc：webrtc协议
   注意：scope项写啥可以，只是代表修改的范围，和type没有关系。
+client：可选
+  - backend：只涉及到服务器后端代码的修改
+  - web：只涉及到前端页面的修改
+  - all：服务器前后端代码都涉及到修改
+  注意，没有修改代码时，client项可以不写。
 
 
 不可以在main分支提交，修改代码请先提交至 dev 分支，CI通过后，才能合并到main分支。
