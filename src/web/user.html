@@ -84,13 +84,6 @@ select.deviceSelect{height:32px;max-width:260px;padding:0 10px;border-radius:9px
 .videoCard{order:2}
 .recordCard{order:4}
 .alarmCard{order:5}
-.identity{display:flex;gap:14px;align-items:center;padding:13px 14px;border-radius:12px;
-  background:rgba(255,255,255,.028);border:1px solid var(--line);margin-bottom:14px}
-.identity .avatar{width:40px;height:40px;border-radius:12px;display:grid;place-items:center;flex:none;
-  background:rgba(74,168,255,.1);border:1px solid rgba(74,168,255,.24);color:var(--accent2);font-size:18px}
-.identity h3{margin:0;font-size:14px;font-weight:650}
-.identity p{margin:2px 0 0;font-size:11.5px;color:var(--dim);word-break:break-all}
-.pills{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
 .metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:14px}
 .metric{padding:12px 12px 10px;border-radius:12px;border:1px solid var(--line);background:rgba(255,255,255,.024);min-width:0}
 .metric label{display:block;font-size:10.5px;color:var(--dim);letter-spacing:.4px;text-transform:uppercase}
@@ -492,20 +485,10 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
       <section class="card statusCard" data-tab-target="device-detail">
       <div class="cardHead">
         <div>
-          <h2>基本状态</h2>
+          <h2>设备详情</h2>
           <small>baseState/query/request → baseState/query/response</small>
         </div>
         <button id="btnRefreshState" class="btn" type="button" title="查询基本状态和运行状态">刷新</button>
-      </div>
-
-      <div class="identity">
-        <div class="avatar">▤</div>
-        <div style="min-width:0;flex:1">
-          <h3 id="devName">未选择设备</h3>
-          <p id="devSub">从上方列表选择，或点「刷新」发送 discovery/query/request</p>
-          <div class="pills" id="devPills"></div>
-        </div>
-        <span id="onlineBadge" class="badge bad">离线</span>
       </div>
 
       <div class="metrics">
@@ -524,13 +507,13 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
         <div class="detail"><span>USB 设备</span><b id="dUsb">—</b></div>
       </div>
 
+      <div class="stateSplit"></div>
+
       <div class="leaseBar">
         <span>设备控制者</span>
         <b id="leaseOwner">—</b>
         <button id="btnLease" class="btn" type="button">申请控制权限</button>
       </div>
-
-      <div class="stateSplit"></div>
 
       <div class="cardHead">
         <div>
@@ -817,8 +800,8 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
   }
 
   var el = {};
-  ['deviceSelect', 'connChip', 'connText', 'onlineBadge', 'devName', 'devSub',
-   'devPills', 'mCpu', 'bCpu', 'mTemp', 'bTemp', 'mMem', 'bMem', 'mUptime', 'bUp', 'dHost', 'dOs', 'dLoad', 'dNet',
+  ['deviceSelect', 'connChip', 'connText',
+   'mCpu', 'bCpu', 'mTemp', 'bTemp', 'mMem', 'bMem', 'mUptime', 'bUp', 'dHost', 'dOs', 'dLoad', 'dNet',
    'dDisk', 'dUsb', 'btnRefreshState', 'leaseOwner', 'btnLease',
    'rVideo', 'rVideoSub', 'rAudio', 'rAudioSub', 'rRecord', 'rRecordSub',
    'rMotor', 'rServo', 'rBattery', 'rSonar', 'btnCapability', 'videoEl',
@@ -1144,8 +1127,6 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
     if (dev === cfg.device) {
       var wasOnline = ui.online;
       ui.online = data.online === true;
-      el.onlineBadge.className = 'badge ' + (ui.online ? 'ok' : 'bad');
-      el.onlineBadge.textContent = ui.online ? '在线' : '离线';
       if (!ui.online) {
         carReleaseAll(false); servoDisable('设备离线');
         delete ui.control.byDevice[dev];
@@ -1219,21 +1200,10 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
     var info = ui.devices[dev] || {};
     ui.deviceInfo = info;
     ui.state = {}; ui.cap = {};
-    el.onlineBadge.className = 'badge ' + (info.online ? 'ok' : 'bad');
-    el.onlineBadge.textContent = info.online ? '在线' : '离线';
-    el.devName.textContent = info.hostname || 'Walle 设备';
-    el.devSub.textContent = [info.model, info.ip].filter(Boolean).join(' · ');
-    el.devPills.innerHTML = '';
-    if (info.model) addPill(info.model);
-    if (info.online) addPill('online');
     resetRunState();
     renderControlState();
     queryState(); requestCapability(); applyVideoUi();
     if (info.online) recordList();
-  }
-  function addPill(text) {
-    var s = document.createElement('span'); s.className = 'badge'; s.textContent = text;
-    el.devPills.appendChild(s);
   }
   var STATE_WAIT_MS = 3000, STATE_MAX_TRIES = 3;
   function stateFail(text, cb) {
@@ -1283,10 +1253,6 @@ textarea:focus,.input:focus{border-color:rgba(61,220,151,.5);box-shadow:0 0 0 3p
   }
   function renderState() {
     var s = ui.state || {}, cpu = s.cpu || {}, mem = s.memory || {}, sys = s.system || {};
-    var info = ui.devices[cfg.device] || {};
-    el.onlineBadge.className = 'badge ' + (info.online ? 'ok' : 'bad');
-    el.onlineBadge.textContent = info.online ? '在线' : '离线';
-    el.devName.textContent = s.hostname || info.hostname || info.device_id || cfg.device || '未选择设备';
     el.mCpu.innerHTML = (cpu.percent == null ? '—' : Math.round(cpu.percent) + '%') + (cpu.count_logical ? ' <small>' + cpu.count_logical + ' 核</small>' : '');
     el.bCpu.style.width = Math.max(0, Math.min(100, cpu.percent || 0)) + '%';
     el.mTemp.innerHTML = (cpu.temperature_c == null ? '—' : Number(cpu.temperature_c).toFixed(1) + '°C');
